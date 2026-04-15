@@ -1,0 +1,24 @@
+.DS_Store
+.cursor/
+
+# inspecto-frame
+inspecto-frame/node_modules/
+inspecto-frame/dist/
+inspecto-frame/dist-ssr/
+inspecto-frame/*.local
+inspecto-frame/logs
+inspecto-frame/*.log
+inspecto-frame/npm-debug.log*
+inspecto-frame/yarn-debug.log*
+inspecto-frame/yarn-error.log*
+inspecto-frame/pnpm-debug.log*
+inspecto-frame/lerna-debug.log*
+
+inspecto-frame/.vscode/*
+!inspecto-frame/.vscode/extensions.json
+inspecto-frame/.idea
+inspecto-frame/*.suo
+inspecto-frame/*.ntvs*
+inspecto-frame/*.njsproj
+inspecto-frame/*.sln
+inspecto-frame/*.sw?
