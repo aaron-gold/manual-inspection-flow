@@ -36,7 +36,9 @@ export default function InspectionViewportImage({ src, alt, zoom, onZoomChange }
 
   const onImgLoad = useCallback((e: React.SyntheticEvent<HTMLImageElement>) => {
     const img = e.currentTarget;
-    setNatural({ w: img.naturalWidth, h: img.naturalHeight });
+    const w = img.naturalWidth || img.width;
+    const h = img.naturalHeight || img.height;
+    if (w > 0 && h > 0) setNatural({ w, h });
   }, []);
 
   const fit =
@@ -124,7 +126,7 @@ export default function InspectionViewportImage({ src, alt, zoom, onZoomChange }
       style={{ touchAction: zoom > 1 ? 'none' : undefined }}
     >
       <div
-        className="flex min-h-full w-full min-w-full items-center justify-center p-2"
+        className="box-border flex min-h-full w-full min-w-0 flex-1 flex-col items-center justify-center p-2"
         style={{ minHeight: '100%' }}
       >
         <UveyeAuthenticatedImage

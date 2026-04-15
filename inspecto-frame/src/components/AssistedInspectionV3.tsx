@@ -13,6 +13,7 @@ import {
   type UveyeCameraFrame,
 } from '@/services/uveyeApi';
 import InspectionViewportImage from '@/components/InspectionViewportImage';
+import { cn } from '@/lib/utils';
 import {
   AlertTriangle,
   ChevronLeft,
@@ -40,7 +41,7 @@ import {
    Data model
    ────────────────────────────────────────────── */
 
-type Area = 'Front' | 'Left' | 'Top' | 'Right' | 'Rear' | 'Undercarriage';
+type Area = 'Front' | 'Left' | 'Top' | 'Right' | 'Rear' | 'Undercarriage' | 'Interior';
 
 interface CarPart {
   name: string;
@@ -115,10 +116,12 @@ const CAR_PARTS: CarPart[] = [
   { name: 'Bed/Cargo',          area: 'Rear',  cameras: [], bestCamera: '', bestFrameNum: 0 },
   // Undercarriage
   { name: 'Undercarriage',        area: 'Undercarriage', cameras: [], bestCamera: '', bestFrameNum: 0 },
+  // Interior (placeholder — future Apollo / interior scans map here like other parts)
+  { name: 'Interior',             area: 'Interior',      cameras: [], bestCamera: '', bestFrameNum: 0 },
 ];
 
 const AREAS: Area[] = ['Front', 'Left', 'Top', 'Right', 'Rear'];
-const ALL_AREAS: Area[] = ['Front', 'Left', 'Top', 'Right', 'Rear', 'Undercarriage'];
+const ALL_AREAS: Area[] = ['Front', 'Left', 'Top', 'Right', 'Rear', 'Undercarriage', 'Interior'];
 
 function partNameMatches(uiPart: string, apiPart: string): boolean {
   return uiPart.trim().toLowerCase() === apiPart.trim().toLowerCase();
@@ -129,11 +132,14 @@ function getFramesForPart(
   allFrames: UveyeCameraFrame[],
   damages: Damage[],
 ): UveyeCameraFrame[] {
-  const frameIds = new Set(
-    damages.filter(d => partNameMatches(part.name, d.part)).map(d => d.frameId),
-  );
+  const partDmgs = damages.filter(d => partNameMatches(part.name, d.part));
+  const frameIds = new Set(partDmgs.map(d => d.frameId));
   if (frameIds.size > 0) {
     return allFrames.filter(f => frameIds.has(f.id));
+  }
+  // No detections yet: interior uses Apollo later — do not fall back to all exterior frames
+  if (part.area === 'Interior') {
+    return [];
   }
   return allFrames;
 }
@@ -176,6 +182,11 @@ export default function AssistedInspectionV3({ payload, vehicleLabel, onBack, ve
     () => buildCameraFramesFromResponse(payload),
     [payload],
   );
+
+  /** Warm blob cache for every frame in this inspection (not only neighbors) so part switches feel faster. */
+  useEffect(() => {
+    prefetchUveyeImages(Object.values(frameImages));
+  }, [frameImages]);
 
   const summaryPortalUrl = useMemo(() => buildUveyePortalSummaryUrl(payload), [payload]);
 
@@ -915,8 +926,10 @@ function MiniCarDiagram({
   onDoubleClickPart: (partName: string) => void;
   vehicleType?: BodyType;
 }) {
-  const [showUndercarriage, setShowUndercarriage] = React.useState(false);
-
+  /** Top-down exterior sketch vs placeholder interior vs undercarriage schematic */
+  const [diagramSurface, setDiagramSurface] = React.useState<'exterior' | 'interior' | 'undercarriage'>(
+    'exterior',
+  );
 
   const handlePartClick = (partName: string) => {
     const part = [...CAR_PARTS].find(p => p.name === partName);
@@ -967,13 +980,56 @@ function MiniCarDiagram({
   };
 
   return (
-    <div className="flex flex-col items-center gap-2">
+    <div className="flex w-full flex-col items-center gap-2">
+      <div className="flex w-full max-w-[220px] items-center justify-end gap-0.5 rounded-lg border border-border bg-muted/25 p-0.5">
+        {(
+          [
+            { key: 'exterior' as const, label: 'Exterior' },
+            { key: 'interior' as const, label: 'Interior' },
+            { key: 'undercarriage' as const, label: 'Under' },
+          ] as const
+        ).map(({ key, label }) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setDiagramSurface(key)}
+            title={
+              key === 'undercarriage'
+                ? 'Undercarriage view'
+                : key === 'interior'
+                  ? 'Interior (placeholder)'
+                  : 'Exterior walk-around'
+            }
+            className={cn(
+              'min-w-0 flex-1 rounded-md px-1 py-1.5 text-[10px] font-semibold leading-tight transition-colors',
+              diagramSurface === key
+                ? 'bg-background text-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground',
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
       <div className="relative" style={{ width: 220, height: 293 }}>
-        {showUndercarriage ? (
+        {diagramSurface === 'undercarriage' ? (
           <svg viewBox="0 0 704 936" className="w-full h-full" fill="none">
             <rect x="220" y="180" width="265" height="580" rx="30" fill="hsl(var(--muted) / 0.15)" stroke="hsl(var(--border))" strokeWidth={1.5} strokeDasharray="6 3" />
             <rect x="230" y="190" width="245" height="560" rx="24" {...partProps('Undercarriage')} />
             <text x="352" y="470" textAnchor="middle" fontSize="22" fill="hsl(var(--muted-foreground))" className="pointer-events-none">Undercarriage</text>
+          </svg>
+        ) : diagramSurface === 'interior' ? (
+          <svg viewBox="0 0 704 936" className="w-full h-full" fill="none">
+            <rect x="200" y="200" width="304" height="520" rx="36" fill="hsl(var(--muted) / 0.12)" stroke="hsl(var(--border))" strokeWidth={1.5} strokeDasharray="8 4" />
+            <rect x="230" y="240" width="246" height="380" rx="28" fill="hsl(var(--muted) / 0.08)" stroke="hsl(var(--border))" strokeWidth={1.2} />
+            <rect x="280" y="360" width="146" height="90" rx="12" fill="hsl(var(--muted) / 0.15)" {...partProps('Interior')} />
+            <text x="352" y="330" textAnchor="middle" fontSize="20" fill="hsl(var(--muted-foreground))" className="pointer-events-none">
+              Interior
+            </text>
+            <text x="352" y="360" textAnchor="middle" fontSize="13" fill="hsl(var(--muted-foreground) / 0.85)" className="pointer-events-none">
+              Placeholder
+            </text>
           </svg>
         ) : (
           <>
@@ -1107,12 +1163,6 @@ function MiniCarDiagram({
           </>
         )}
       </div>
-      <button
-        onClick={() => setShowUndercarriage(!showUndercarriage)}
-        className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1 px-2 py-1 rounded-md hover:bg-accent"
-      >
-        {showUndercarriage ? '↑ Top View' : '↓ Undercarriage'}
-      </button>
     </div>
   );
 }

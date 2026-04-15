@@ -301,6 +301,7 @@ function humanizeDetectionType(raw: string): string {
   if (!raw) return 'Damage';
   return raw
     .replace(/^Body/, '')
+    .replace(/^Undercarriage/, '')
     .replace(/([a-z])([A-Z])/g, '$1 $2')
     .trim() || raw;
 }
@@ -357,6 +358,43 @@ function atlasDetectionsToAlerts(response: UveyeInspectionResponse): UveyeAlert[
   return out;
 }
 
+/** Helios (undercarriage) — shared `undercarriageImage`, pins from each `detections[]` rectangle. */
+function heliosDetectionsToAlerts(response: UveyeInspectionResponse): UveyeAlert[] {
+  const root = response as Record<string, unknown>;
+  const helios = root.helios;
+  if (!helios || typeof helios !== 'object') return [];
+  const h = helios as Record<string, unknown>;
+  const imageUrl =
+    typeof h.undercarriageImage === 'string' ? h.undercarriageImage.trim() : '';
+  if (!imageUrl) return [];
+  const detections = h.detections;
+  if (!Array.isArray(detections)) return [];
+
+  const part = 'Undercarriage';
+  const out: UveyeAlert[] = [];
+  for (let i = 0; i < detections.length; i++) {
+    const d = detections[i];
+    if (!d || typeof d !== 'object') continue;
+    const o = d as Record<string, unknown>;
+    const { x, y } = rectangleToPinPercent(o.rectangle);
+    const high = o.isHighSeverity === true;
+    const med = o.isMediumSeverity === true;
+    const rawType = String(o.type ?? 'Damage');
+    const title = humanizeDetectionType(rawType);
+    out.push({
+      id: String(o.id ?? `helios_${i}`),
+      part,
+      type: title,
+      severity: high ? 'High' : med ? 'Medium' : 'Low',
+      imageUrl,
+      location: { x, y },
+      frameIndex: 0,
+      damageName: title,
+    });
+  }
+  return out;
+}
+
 const ARTEMIS_CORNER_LABEL: Record<string, string> = {
   leftFront: 'Left Front Wheel',
   rightFront: 'Right Front Wheel',
@@ -406,10 +444,15 @@ function artemisTireAlerts(response: UveyeInspectionResponse): UveyeAlert[] {
   return out;
 }
 
-/** Legacy `alerts` plus production `atlas.detections` and Artemis tire findings. */
+/** Legacy `alerts` plus `atlas.detections`, `helios.detections` (undercarriage), and Artemis tires. */
 export function getCombinedAlerts(response: UveyeInspectionResponse): UveyeAlert[] {
   const legacy = response.alerts ?? [];
-  return [...legacy, ...atlasDetectionsToAlerts(response), ...artemisTireAlerts(response)];
+  return [
+    ...legacy,
+    ...atlasDetectionsToAlerts(response),
+    ...heliosDetectionsToAlerts(response),
+    ...artemisTireAlerts(response),
+  ];
 }
 
 /**
@@ -466,6 +509,7 @@ export function normalizeUveyeInspectionResponse(raw: unknown): UveyeInspectionR
           inn.vehicle !== undefined ||
           inn.vin !== undefined ||
           inn.atlas !== undefined ||
+          inn.helios !== undefined ||
           inn.organizationId !== undefined ||
           inn.siteId !== undefined
         ) {
@@ -714,11 +758,14 @@ export function mapUveyeAlertsToDamages(
       (frames.length === 0 ? 'f_0' : frames[index % frames.length].id);
 
     const frame = frames.find((f) => f.id === frameId);
-    const cam =
+    const fromAlert =
       (typeof rec.cameraId === 'string' && rec.cameraId.trim()) ||
       (typeof alert.cameraId === 'string' && alert.cameraId.trim()) ||
-      frame?.camera ||
       '';
+    const frameCam = typeof frame?.camera === 'string' ? frame.camera.trim() : '';
+    /** Auto-generated `cam_0` labels are not Atlas camera ids — skip bogus portal links (e.g. Helios). */
+    const syntheticOnly = /^cam_\d+$/i.test(frameCam);
+    const cam = fromAlert || (!syntheticOnly && frameCam ? frameCam : '');
     const portalFrameIndex =
       typeof rec.frameIndex === 'number'
         ? rec.frameIndex
