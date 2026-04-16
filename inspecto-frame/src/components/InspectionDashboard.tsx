@@ -1,10 +1,13 @@
 import React, { useState } from 'react';
-import { Car, Clock, CheckCircle, AlertTriangle, ChevronRight, Download, Loader2 } from 'lucide-react';
+import { Car, Clock, CheckCircle, AlertTriangle, ChevronRight, Download, Loader2, Table2 } from 'lucide-react';
 
 export type BodyType = 'sedan' | 'truck';
 
 export interface InspectionRecord {
+  /** Stable key (UVeye inspection id in current app). */
   id: string;
+  /** Same as `id`; kept for clarity in exports. */
+  uveyeInspectionId: string;
   vin: string;
   make: string;
   model: string;
@@ -18,18 +21,33 @@ export interface InspectionRecord {
 
 interface Props {
   inspections: InspectionRecord[];
+  /** Shown on CSV; not used for login. */
+  inspectorName: string;
+  onInspectorNameChange: (name: string) => void;
   onSelect: (id: string) => void;
   onRetrieveFromApi: (inspectionId: string) => Promise<void>;
+  /** ZIP with daily-activity.csv + captured-photos/ */
+  onExportDailyPack: () => Promise<void>;
+  /** Show in-app table preview of the same CSV columns (no download). */
+  onPreviewDailyPack?: () => void;
   isRetrieving?: boolean;
+  isExporting?: boolean;
   retrieveError?: string | null;
+  exportError?: string | null;
 }
 
 export default function InspectionDashboard({
   inspections,
+  inspectorName,
+  onInspectorNameChange,
   onSelect,
   onRetrieveFromApi,
+  onExportDailyPack,
+  onPreviewDailyPack,
   isRetrieving = false,
+  isExporting = false,
   retrieveError = null,
+  exportError = null,
 }: Props) {
   const [inspectionId, setInspectionId] = useState('');
   const inProgress = inspections.filter(i => i.status === 'in_progress');
@@ -45,11 +63,63 @@ export default function InspectionDashboard({
     <div className="h-full bg-muted/30 overflow-auto">
       <div className="max-w-5xl mx-auto px-6 py-10">
         {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-2xl font-bold text-foreground">Vehicle Inspections</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            {inspections.length} inspection{inspections.length !== 1 ? 's' : ''} retrieved
+        <div className="mb-8 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-foreground">Vehicle Inspections</h1>
+            <p className="text-sm text-muted-foreground mt-1">
+              {inspections.length} inspection{inspections.length !== 1 ? 's' : ''} retrieved
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {onPreviewDailyPack && (
+              <button
+                type="button"
+                onClick={() => onPreviewDailyPack()}
+                className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-border bg-card text-sm font-medium hover:bg-accent transition-colors"
+              >
+                <Table2 size={16} />
+                Preview daily CSV
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => void onExportDailyPack()}
+              disabled={isExporting}
+              className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-border bg-card text-sm font-medium hover:bg-accent transition-colors disabled:opacity-50"
+            >
+              {isExporting ? (
+                <>
+                  <Loader2 size={16} className="animate-spin" />
+                  Packaging…
+                </>
+              ) : (
+                <>
+                  <Download size={16} />
+                  Today&apos;s pack (CSV + photos)
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+        {exportError && (
+          <p className="mb-6 text-sm text-destructive" role="alert">
+            {exportError}
           </p>
+        )}
+
+        <div className="mb-6 p-4 rounded-xl border border-border bg-card shadow-sm">
+          <h2 className="text-sm font-semibold text-foreground mb-1">Inspector label (optional)</h2>
+          <p className="text-xs text-muted-foreground mb-3">
+            Used in daily exports—no password or account.
+          </p>
+          <input
+            type="text"
+            value={inspectorName}
+            onChange={(e) => onInspectorNameChange(e.target.value)}
+            placeholder="e.g. Aaron"
+            className="w-full max-w-md px-4 py-2 rounded-lg border border-border bg-background text-sm"
+            autoComplete="off"
+          />
         </div>
 
         {/* Retrieve from API */}
@@ -161,8 +231,9 @@ function InspectionCard({ inspection, onClick }: { inspection: InspectionRecord;
           </span>
           <span className="text-xs text-muted-foreground">• {inspection.color}</span>
         </div>
-        <div className="flex items-center gap-3 mt-0.5 text-xs text-muted-foreground">
-          <span>VIN: {inspection.vin}</span>
+        <div className="flex items-center gap-3 mt-0.5 text-xs text-muted-foreground flex-wrap">
+          <span title="UVeye inspection id">{inspection.uveyeInspectionId}</span>
+          <span>• VIN: {inspection.vin}</span>
           <span>• {dateStr}</span>
           {inspection.damageCount > 0 && (
             <span className="flex items-center gap-1 text-destructive">

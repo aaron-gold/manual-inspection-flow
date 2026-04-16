@@ -1,13 +1,13 @@
 /**
- * UVeye Production API client
- * Endpoint: https://us.api.uveye.app/v1/inspection/
- * API Key: P4CTPXN9morxPO2Qcr1ODjLsp6wJ7Frp
- *
- * NOTE: In production, proxy this through an edge function to keep the key server-side.
- * For now we call the API directly since no backend is available.
+ * UVeye Production API client.
+ * Default key is embedded for internal deployments; override with `VITE_UVEYE_API_KEY` in `.env` if needed.
+ * In dev, API and image requests use the Vite proxy (see `vite.config.ts`) when targeting `us.api.uveye.app`.
  */
 
-const UVEYE_ORIGIN = 'https://us.api.uveye.app';
+const UVEYE_ORIGIN = "https://us.api.uveye.app";
+
+/** Internal default API key (visible in bundle—OK for trusted internal use only). */
+const UVEYE_API_KEY_DEFAULT = "P4CTPXN9morxPO2Qcr1ODjLsp6wJ7Frp";
 /** Dev-only path prefix — must match `vite.config.ts` `server.proxy` */
 export const UVEYE_DEV_PROXY_PREFIX = '/uveye-api';
 
@@ -33,9 +33,13 @@ export function resolveUveyeRequestUrl(url: string): string {
   return u;
 }
 
-export const UVEYE_API_HOST = 'us.api.uveye.app';
-/** @internal — only for authenticated image fetch; prefer server-side proxy in production */
-export const UVEYE_API_KEY = 'P4CTPXN9morxPO2Qcr1ODjLsp6wJ7Frp';
+export const UVEYE_API_HOST = "us.api.uveye.app";
+
+function getUveyeApiKey(): string {
+  const k = import.meta.env.VITE_UVEYE_API_KEY;
+  if (typeof k === "string" && k.trim()) return k.trim();
+  return UVEYE_API_KEY_DEFAULT;
+}
 
 export function isUveyeApiImageUrl(url: string): boolean {
   if (typeof url !== 'string' || !url.trim()) return false;
@@ -52,8 +56,10 @@ export async function fetchUveyeImageBlobUrl(url: string): Promise<string> {
   const reqUrl = resolveUveyeRequestUrl(url);
   const hit = imageBlobUrlCache.get(reqUrl);
   if (hit) return hit;
+
+  const key = getUveyeApiKey();
   const res = await fetch(reqUrl, {
-    headers: { 'uveye-api-key': UVEYE_API_KEY },
+    headers: { "uveye-api-key": key },
   });
   if (!res.ok) {
     throw new Error(`Image request failed ${res.status}`);
@@ -182,10 +188,15 @@ function getPortalInspectionUuid(root: Record<string, unknown>): string {
   const keys = ['inspectionUuid', 'uuid', 'scanUuid', 'id'] as const;
   for (const k of keys) {
     const v = root[k];
-    if (typeof v === 'string' && UUID_RE.test(v)) return v;
+    if (typeof v === 'string' && UUID_RE.test(v)) return v.trim();
   }
   const id = root.inspectionId;
-  if (typeof id === 'string' && UUID_RE.test(id)) return id;
+  if (typeof id === 'string' && UUID_RE.test(id)) return id.trim();
+  /** UVeye web app `/…/inspections/{siteId}/{id}/summary` often uses API `inspectionId` even when not RFC-4122. */
+  if (typeof id === 'string') {
+    const t = id.trim();
+    if (t.length > 0) return t;
+  }
   return '';
 }
 
@@ -306,6 +317,53 @@ function humanizeDetectionType(raw: string): string {
     .trim() || raw;
 }
 
+/** True for empty or our synthetic `cam_0`… labels from `buildCameraFramesFromResponse` (not real Atlas ids). */
+function isSyntheticPortalCameraId(s: string): boolean {
+  return !s.trim() || /^cam_\d+$/i.test(s.trim());
+}
+
+/**
+ * Match detection `image` / `croppedImage` to `atlas.animatedFrames` and derive UVeye portal ids
+ * (`at_cam_04` …), not synthetic `cam_N` from the local frame list.
+ * Strips: left → at_cam_04, top → at_cam_05, right → at_cam_06 (0-based index within that strip).
+ */
+const ANIMATED_STRIP_ORDER = ['left', 'top', 'right'] as const;
+const ATLAS_CAM_STRIP_BASE = 4;
+
+function inferAtlasPortalFromAnimatedFrames(
+  response: UveyeInspectionResponse,
+  imageCandidates: string[],
+): { cameraId: string; frameIndex: number } | undefined {
+  const atlas = (response as Record<string, unknown>).atlas as Record<string, unknown> | undefined;
+  if (!atlas) return undefined;
+  const af = atlas.animatedFrames as Record<string, unknown> | undefined;
+  if (!af || typeof af !== 'object') return undefined;
+
+  const candidates = imageCandidates.map((s) => s.trim()).filter(Boolean);
+  if (candidates.length === 0) return undefined;
+
+  for (let stripIdx = 0; stripIdx < ANIMATED_STRIP_ORDER.length; stripIdx++) {
+    const side = ANIMATED_STRIP_ORDER[stripIdx];
+    const arr = af[side];
+    if (!Array.isArray(arr)) continue;
+    for (let i = 0; i < arr.length; i++) {
+      const u = typeof arr[i] === 'string' ? arr[i].trim() : '';
+      if (!u) continue;
+      const nk = normalizeUrlKey(u);
+      for (const cand of candidates) {
+        if (normalizeUrlKey(cand) === nk) {
+          const camNum = ATLAS_CAM_STRIP_BASE + stripIdx;
+          return {
+            cameraId: `at_cam_${String(camNum).padStart(2, '0')}`,
+            frameIndex: i,
+          };
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
 function atlasDetectionsToAlerts(response: UveyeInspectionResponse): UveyeAlert[] {
   const root = response as Record<string, unknown>;
   const atlas = root.atlas;
@@ -327,12 +385,12 @@ function atlasDetectionsToAlerts(response: UveyeInspectionResponse): UveyeAlert[
     const { x, y } = rectangleToPinPercent(o.rectangle);
     const high = o.isHighSeverity === true;
     const med = o.isMediumSeverity === true;
-    const cameraId =
+    let cameraId =
       (typeof o.cameraId === 'string' && o.cameraId.trim()) ||
       (typeof o.camera === 'string' && o.camera.trim()) ||
       (typeof o.cameraName === 'string' && o.cameraName.trim()) ||
       '';
-    const frameRaw =
+    let frameRaw =
       typeof o.frameIndex === 'number'
         ? o.frameIndex
         : typeof o.frameNumber === 'number'
@@ -342,6 +400,11 @@ function atlasDetectionsToAlerts(response: UveyeInspectionResponse): UveyeAlert[
             : typeof o.imageIndex === 'number'
               ? o.imageIndex
               : undefined;
+    const inferred = inferAtlasPortalFromAnimatedFrames(response, [full, crop, crop || full]);
+    if (inferred && !cameraId) {
+      cameraId = inferred.cameraId;
+      if (frameRaw === undefined) frameRaw = inferred.frameIndex;
+    }
     const damageName = pickDetectionDisplayName(o);
     out.push({
       id: String(o.id ?? `atlas_${i}`),
@@ -548,20 +611,20 @@ function collectImageObjectArrays(r: UveyeInspectionResponse): unknown[][] {
 export async function fetchUveyeInspection(
   body: UveyeRequestBody,
 ): Promise<UveyeInspectionResponse> {
+  const key = getUveyeApiKey();
   const res = await fetch(getInspectionPostUrl(), {
-    method: 'POST',
+    method: "POST",
     headers: {
-      'Content-Type': 'application/json',
-      'uveye-api-key': UVEYE_API_KEY,
+      "Content-Type": "application/json",
+      "uveye-api-key": key,
     },
     body: JSON.stringify(body),
   });
 
   if (!res.ok) {
-    const text = await res.text().catch(() => '');
+    const text = await res.text().catch(() => "");
     throw new Error(`UVeye API error ${res.status}: ${text}`);
   }
-
   const rawJson = await res.json();
   const data = normalizeUveyeInspectionResponse(rawJson);
 
@@ -569,11 +632,11 @@ export async function fetchUveyeInspection(
     const built = buildCameraFramesFromResponse(data);
     const n = getCombinedAlerts(data).length;
     console.info(
-      '[UVeye] inspection loaded — combined alerts/detections:',
+      "[UVeye] inspection loaded — combined alerts/detections:",
       n,
-      'image frames:',
+      "image frames:",
       built.frames.length,
-      'top-level keys:',
+      "top-level keys:",
       Object.keys(data),
     );
   }
@@ -682,11 +745,81 @@ export type UveyeMappedDamage = {
   confirmed: null;
   /** Open this detection in the UVeye web app (Atlas frame). */
   portalUrl?: string;
+  /** Atlas camera id from API (e.g. `at_cam_06`); keep when persisting review state for URL rebuild. */
+  atlasCameraId?: string;
+  /** 0-based frame index passed to Atlas URL (from `frameIndex` or derived from frame). */
+  atlasFrameIndex?: number;
   /** API detection display name when present */
   damageName?: string;
   /** Stable id from payload (`atlas.detections[].id` etc.) */
   reportId?: string;
 };
+
+/**
+ * Prefer stored full URL; else rebuild from persisted API camera/index + payload.
+ * Pass `frame` so UI frames labeled `cam_0` still resolve when API id differs.
+ */
+export function resolveDamageAtlasPortalUrl(
+  damage: {
+    portalUrl?: string;
+    atlasCameraId?: string;
+    atlasFrameIndex?: number;
+  },
+  response: UveyeInspectionResponse,
+  frame: UveyeCameraFrame | null | undefined,
+): string | undefined {
+  if (damage.portalUrl?.trim()) return damage.portalUrl.trim();
+  const cam = (damage.atlasCameraId?.trim() || frame?.camera?.trim() || '').trim();
+  if (!cam) return undefined;
+  let fi = 0;
+  if (typeof damage.atlasFrameIndex === 'number' && Number.isFinite(damage.atlasFrameIndex)) {
+    fi = Math.max(0, Math.floor(damage.atlasFrameIndex));
+  } else if (frame && frame.frameNum > 0) {
+    fi = frame.frameNum - 1;
+  }
+  return buildUveyePortalAtlasFrameUrl(response, cam, fi);
+}
+
+/**
+ * Re-attach `portalUrl` / Atlas fields from a fresh `mapUveyeAlertsToDamages` pass onto persisted rows
+ * (saved damages keep review flags but may omit or stale-link portal fields).
+ */
+export function mergePersistedDamagesWithFreshMap<
+  T extends {
+    part: string;
+    frameId: string;
+    reportId?: string;
+    damageName?: string;
+    portalUrl?: string;
+    atlasCameraId?: string;
+    atlasFrameIndex?: number;
+  },
+>(saved: T[], fresh: UveyeMappedDamage[]): T[] {
+  const pool = [...fresh];
+  return saved.map((d) => {
+    let idx = -1;
+    if (d.reportId) {
+      idx = pool.findIndex((x) => x.reportId === d.reportId);
+    }
+    if (idx < 0) {
+      idx = pool.findIndex(
+        (x) =>
+          x.part === d.part &&
+          x.frameId === d.frameId &&
+          (x.damageName || '') === (d.damageName || ''),
+      );
+    }
+    if (idx < 0) return d;
+    const m = pool[idx];
+    pool.splice(idx, 1);
+    return {
+      ...d,
+      portalUrl: m.portalUrl ?? d.portalUrl,
+      atlasCameraId: m.atlasCameraId ?? d.atlasCameraId,
+      atlasFrameIndex: m.atlasFrameIndex ?? d.atlasFrameIndex,
+    };
+  });
+}
 
 /** Normalize URL for matching alert image to frame (trim, strip trailing slash on path). */
 function normalizeUrlKey(u: string): string {
@@ -694,7 +827,7 @@ function normalizeUrlKey(u: string): string {
     const x = u.trim();
     if (x.startsWith('data:')) return x;
     const url = new URL(x.startsWith('//') ? `https:${x}` : x);
-    let path = url.pathname.replace(/\/$/, '');
+    const path = url.pathname.replace(/\/$/, '');
     return `${url.origin}${path}${url.search}`;
   } catch {
     return u.trim();
@@ -753,7 +886,7 @@ export function mapUveyeAlertsToDamages(
   return alerts.map((alert, index) => {
     const rec = alert as Record<string, unknown>;
     const resolved = findFrameIdForAlert(alert, frames, urlToFrameId);
-    let frameId =
+    const frameId =
       resolved ??
       (frames.length === 0 ? 'f_0' : frames[index % frames.length].id);
 
@@ -763,17 +896,32 @@ export function mapUveyeAlertsToDamages(
       (typeof alert.cameraId === 'string' && alert.cameraId.trim()) ||
       '';
     const frameCam = typeof frame?.camera === 'string' ? frame.camera.trim() : '';
-    /** Auto-generated `cam_0` labels are not Atlas camera ids — skip bogus portal links (e.g. Helios). */
-    const syntheticOnly = /^cam_\d+$/i.test(frameCam);
-    const cam = fromAlert || (!syntheticOnly && frameCam ? frameCam : '');
-    const portalFrameIndex =
+    const urlCandidates = [
+      pickDamageImageUrl(rec),
+      typeof rec.imageUrl === 'string' ? rec.imageUrl.trim() : '',
+      typeof alert.imageUrl === 'string' ? alert.imageUrl.trim() : '',
+    ].filter(Boolean);
+
+    const inferredPortal = inferAtlasPortalFromAnimatedFrames(response, urlCandidates);
+
+    let camForPortal = fromAlert || frameCam;
+    let portalFrameIndex =
       typeof rec.frameIndex === 'number'
         ? rec.frameIndex
         : frame && frame.frameNum > 0
           ? frame.frameNum - 1
           : 0;
+
+    /** Replace synthetic `cam_N` (or missing id) with real `at_cam_XX` + strip frame index from `animatedFrames`. */
+    if (inferredPortal && isSyntheticPortalCameraId(camForPortal)) {
+      camForPortal = inferredPortal.cameraId;
+      portalFrameIndex = inferredPortal.frameIndex;
+    }
+
     const portalUrl =
-      cam && buildUveyePortalAtlasFrameUrl(response, cam, portalFrameIndex);
+      camForPortal && !isSyntheticPortalCameraId(camForPortal)
+        ? buildUveyePortalAtlasFrameUrl(response, camForPortal, portalFrameIndex)
+        : undefined;
 
     const apiName =
       typeof alert.damageName === 'string' && alert.damageName.trim()
@@ -792,6 +940,11 @@ export function mapUveyeAlertsToDamages(
       frameId,
       confirmed: null,
       portalUrl: portalUrl ?? undefined,
+      atlasCameraId:
+        !isSyntheticPortalCameraId(camForPortal)
+          ? camForPortal
+          : inferredPortal?.cameraId,
+      atlasFrameIndex: portalFrameIndex,
       damageName: apiName || undefined,
       reportId,
     };
@@ -813,33 +966,36 @@ export function buildInspectionRecordFromResponse(
   response: UveyeInspectionResponse,
 ): {
   id: string;
+  uveyeInspectionId: string;
   vin: string;
   make: string;
   model: string;
   year: number;
   color: string;
-  bodyType: 'sedan' | 'truck';
+  bodyType: "sedan" | "truck";
   createdAt: Date;
-  status: 'in_progress';
+  status: "in_progress";
   damageCount: number;
 } {
   const root = response as Record<string, unknown>;
   const v = response.vehicle;
-  const make = String(v?.make ?? root.make ?? '—');
-  const model = String(v?.model ?? root.model ?? '—');
+  const make = String(v?.make ?? root.make ?? "—");
+  const model = String(v?.model ?? root.model ?? "—");
   const yearRaw = v?.year ?? root.year;
   const yearNum =
-    typeof yearRaw === 'number'
+    typeof yearRaw === "number"
       ? yearRaw
-      : parseInt(String(yearRaw ?? '').replace(/[^\d]/g, '').slice(0, 4), 10) || new Date().getFullYear();
-  const vin = String(response.vin ?? root.vin ?? '—');
-  const color = String(v?.color ?? root.exteriorColor ?? '—');
+      : parseInt(String(yearRaw ?? "").replace(/[^\d]/g, "").slice(0, 4), 10) || new Date().getFullYear();
+  const vin = String(response.vin ?? root.vin ?? "—");
+  const color = String(v?.color ?? root.exteriorColor ?? "—");
   const vehicleLike = v ?? {
     bodyType: root.bodyType,
     vehicleType: root.bodyType,
   };
+  const uveyeId = String(response.inspectionId ?? requestedId).trim();
   return {
-    id: String(response.inspectionId ?? requestedId).trim(),
+    id: uveyeId,
+    uveyeInspectionId: uveyeId,
     vin,
     make,
     model,
@@ -847,7 +1003,7 @@ export function buildInspectionRecordFromResponse(
     color,
     bodyType: inferBodyTypeFromVehicle(vehicleLike as { [key: string]: unknown }),
     createdAt: new Date(),
-    status: 'in_progress',
+    status: "in_progress",
     damageCount: getCombinedAlerts(response).length,
   };
 }

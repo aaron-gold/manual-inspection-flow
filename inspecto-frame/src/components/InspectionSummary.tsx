@@ -31,7 +31,13 @@ interface InspectionSummaryProps {
   reviewedParts: Set<string>;
   totalParts: number;
   onBack: () => void;
-  capturedPhotos?: { partName: string; damageType: string; dataUrl: string; timestamp: Date }[];
+  capturedPhotos?: {
+    partName: string;
+    damageType: string;
+    dataUrl?: string;
+    imageUrl?: string;
+    timestamp: Date;
+  }[];
 }
 
 type SummaryFilter =
@@ -110,7 +116,7 @@ export default function InspectionSummary({
   };
 
   const handleDownloadPdf = () => {
-    generateInspectionPdf({
+    void generateInspectionPdf({
       vehicleLabel,
       damages,
       reviewedParts,
@@ -253,7 +259,11 @@ export default function InspectionSummary({
             <div className="grid grid-cols-3 gap-2">
               {capturedPhotos.map((photo, i) => (
                 <div key={i} className="relative rounded-lg overflow-hidden border border-border aspect-video">
-                  <img src={photo.dataUrl} alt={photo.partName} className="w-full h-full object-cover" />
+                  <img
+                    src={photo.dataUrl ?? photo.imageUrl ?? ""}
+                    alt={photo.partName}
+                    className="w-full h-full object-cover"
+                  />
                   <div className="absolute bottom-0 inset-x-0 bg-foreground/75 text-background text-[10px] px-1.5 py-1 leading-tight">
                     <div className="font-semibold truncate">{photo.partName}</div>
                     <div className="opacity-90 truncate">{photo.damageType}</div>

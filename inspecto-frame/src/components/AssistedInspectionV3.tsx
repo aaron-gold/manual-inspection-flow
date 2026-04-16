@@ -1,13 +1,16 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import carSketchImg from '@/assets/car-sketch.png';
 import truckSketchImg from '@/assets/truck-sketch.png';
 import type { BodyType } from './InspectionDashboard';
 import CameraCapture from './CameraCapture';
+import type { CapturedPhotoEntry } from '@/types/capturedPhoto';
 import InspectionSummary from './InspectionSummary';
 import {
   buildCameraFramesFromResponse,
   mapUveyeAlertsToDamages,
+  mergePersistedDamagesWithFreshMap,
   prefetchUveyeImages,
+  resolveDamageAtlasPortalUrl,
   buildUveyePortalSummaryUrl,
   type UveyeInspectionResponse,
   type UveyeCameraFrame,
@@ -63,6 +66,9 @@ interface Damage {
   confirmed?: boolean | null;
   /** UVeye web app deep link for this frame (Atlas). */
   portalUrl?: string;
+  /** From API mapping — used to rebuild Atlas URL after local persist. */
+  atlasCameraId?: string;
+  atlasFrameIndex?: number;
   /** Same physical damage seen from another angle / duplicate finding */
   isDuplicate?: boolean;
   /** Mark for follow-up (ops / QA), independent of approve or reject */
@@ -153,9 +159,25 @@ interface AssistedInspectionV3Props {
   vehicleLabel?: string;
   onBack?: () => void;
   vehicleType?: BodyType;
+  /** Enables autosave of review state to local storage (via parent). */
+  inspectionKey?: string;
+  initialReviewState?: Record<string, unknown> | null;
+  initialCapturedPhotos?: CapturedPhotoEntry[];
+  onPersistReviewState?: (state: Record<string, unknown>) => void;
+  onCapturedPhotosChange?: (photos: CapturedPhotoEntry[]) => void;
 }
 
-export default function AssistedInspectionV3({ payload, vehicleLabel, onBack, vehicleType = 'sedan' }: AssistedInspectionV3Props) {
+export default function AssistedInspectionV3({
+  payload,
+  vehicleLabel,
+  onBack,
+  vehicleType = 'sedan',
+  inspectionKey,
+  initialReviewState = null,
+  initialCapturedPhotos,
+  onPersistReviewState,
+  onCapturedPhotosChange,
+}: AssistedInspectionV3Props) {
   const [activePart, setActivePart] = useState<CarPart | null>(null);
   const [currentFrameIdx, setCurrentFrameIdx] = useState(0);
   const [reviewedParts, setReviewedParts] = useState<Set<string>>(new Set());
@@ -168,9 +190,7 @@ export default function AssistedInspectionV3({ payload, vehicleLabel, onBack, ve
 
   // Camera capture state
   const [showCameraCapture, setShowCameraCapture] = useState(false);
-  const [capturedPhotos, setCapturedPhotos] = useState<
-    { partName: string; damageType: string; dataUrl: string; timestamp: Date }[]
-  >([]);
+  const [capturedPhotos, setCapturedPhotos] = useState<CapturedPhotoEntry[]>(() => initialCapturedPhotos ?? []);
   
   // Summary view state
   const [showSummary, setShowSummary] = useState(false);
@@ -191,10 +211,46 @@ export default function AssistedInspectionV3({ payload, vehicleLabel, onBack, ve
   const summaryPortalUrl = useMemo(() => buildUveyePortalSummaryUrl(payload), [payload]);
 
   const [damages, setDamages] = useState<Damage[]>([]);
+  const didHydrateReview = useRef(false);
 
   useEffect(() => {
-    setDamages(mapUveyeAlertsToDamages(payload, allFrames, frameImages));
-  }, [payload, allFrames, frameImages]);
+    didHydrateReview.current = false;
+  }, [payload]);
+
+  useEffect(() => {
+    const fresh = mapUveyeAlertsToDamages(payload, allFrames, frameImages);
+    const saved = initialReviewState?.damages as Damage[] | undefined;
+    if (saved && Array.isArray(saved) && saved.length > 0) {
+      setDamages(mergePersistedDamagesWithFreshMap(saved, fresh));
+    } else {
+      setDamages(fresh);
+    }
+  }, [payload, allFrames, frameImages, initialReviewState]);
+
+  useEffect(() => {
+    if (didHydrateReview.current || !initialReviewState) return;
+    const rp = initialReviewState.reviewedParts as string[] | undefined;
+    if (rp && Array.isArray(rp)) setReviewedParts(new Set(rp));
+    const cp = initialReviewState.customParts as CarPart[] | undefined;
+    if (cp && Array.isArray(cp)) setCustomParts(cp);
+    didHydrateReview.current = true;
+  }, [initialReviewState]);
+
+  useEffect(() => {
+    if (!onPersistReviewState || !inspectionKey) return;
+    const t = window.setTimeout(() => {
+      onPersistReviewState({
+        damages,
+        reviewedParts: Array.from(reviewedParts),
+        customParts,
+      });
+    }, 1200);
+    return () => window.clearTimeout(t);
+  }, [damages, reviewedParts, customParts, onPersistReviewState, inspectionKey]);
+
+  useEffect(() => {
+    onCapturedPhotosChange?.(capturedPhotos);
+  }, [capturedPhotos, onCapturedPhotosChange]);
 
   const allParts = [...CAR_PARTS, ...customParts];
   const partNames = useMemo(() => allParts.map((p) => p.name), [allParts]);
@@ -380,11 +436,8 @@ export default function AssistedInspectionV3({ payload, vehicleLabel, onBack, ve
         <CameraCapture
           partNames={partNames}
           suggestedPartName={activePart?.name}
-          onCapture={(payload) => {
-            setCapturedPhotos((prev) => [
-              ...prev,
-              { ...payload, timestamp: new Date() },
-            ]);
+          onCapture={(capturePayload) => {
+            setCapturedPhotos((prev) => [...prev, { ...capturePayload, timestamp: new Date() }]);
             setShowCameraCapture(false);
           }}
           onClose={() => setShowCameraCapture(false)}
@@ -576,30 +629,71 @@ export default function AssistedInspectionV3({ payload, vehicleLabel, onBack, ve
                           )}
                         </div>
                       )}
-                      {dmgFrame && (
+                      {dmgFrame ? (
                         <div className="flex flex-wrap items-center gap-2 mt-1.5">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const frameIdx = partFrames.findIndex(f => f.id === dmg.frameId);
-                              if (frameIdx >= 0) setCurrentFrameIdx(frameIdx);
-                            }}
-                            className="flex items-center gap-1 text-[10px] text-primary hover:underline"
-                          >
-                            <LinkIcon size={10} /> {dmgFrame.camera} • Frame {dmgFrame.frameNum}
-                          </button>
-                          {dmg.portalUrl && (
-                            <a
-                              href={dmg.portalUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-primary underline-offset-2 hover:underline"
-                            >
-                              <ExternalLink size={10} /> Open in UVeye
-                            </a>
-                          )}
+                          {(() => {
+                            const atlasViewerUrl = resolveDamageAtlasPortalUrl(dmg, payload, dmgFrame);
+                            if (atlasViewerUrl) {
+                              return (
+                                <a
+                                  href={atlasViewerUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  title="Open this camera and frame in the UVeye web app (Atlas)"
+                                  className="inline-flex items-center gap-1.5 text-[10px] font-semibold text-primary hover:underline"
+                                >
+                                  <ExternalLink size={12} />
+                                  {dmgFrame.camera} • Frame {dmgFrame.frameNum}
+                                </a>
+                              );
+                            }
+                            return (
+                              <span
+                                className="text-[10px] text-muted-foreground"
+                                title="Cannot build Atlas link — missing org, site, inspection id, or camera in the payload."
+                              >
+                                <LinkIcon size={10} className="inline mr-0.5" />
+                                {dmgFrame.camera} • Frame {dmgFrame.frameNum}
+                              </span>
+                            );
+                          })()}
                         </div>
-                      )}
+                      ) : (() => {
+                        const atlasOnly = resolveDamageAtlasPortalUrl(dmg, payload, null);
+                        if (atlasOnly) {
+                          return (
+                            <div className="mt-1.5">
+                              <a
+                                href={atlasOnly}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                title="Open this detection in the UVeye web app (Atlas)"
+                                className="inline-flex items-center gap-1.5 text-[10px] font-semibold text-primary hover:underline"
+                              >
+                                <ExternalLink size={12} />
+                                Open in UVeye (Atlas)
+                              </a>
+                            </div>
+                          );
+                        }
+                        if (summaryPortalUrl) {
+                          return (
+                            <div className="mt-1.5">
+                              <a
+                                href={summaryPortalUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                title="Open this inspection in the UVeye web app (summary)"
+                                className="inline-flex items-center gap-1.5 text-[10px] font-semibold text-primary hover:underline"
+                              >
+                                <ExternalLink size={12} />
+                                Open in UVeye (summary)
+                              </a>
+                            </div>
+                          );
+                        }
+                        return null;
+                      })()}
                     </div>
 
                     <div className="flex flex-wrap items-center gap-1.5 shrink-0 justify-end">
@@ -949,7 +1043,7 @@ function MiniCarDiagram({
     let fill = 'transparent';
     let stroke = 'transparent';
     let strokeWidth = 0;
-    let opacity = 1;
+    const opacity = 1;
 
     if (hasDamage && isActive) {
       // Active + damaged: solid red with blue outline

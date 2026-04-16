@@ -17,10 +17,38 @@ interface PdfParams {
   damages: Damage[];
   reviewedParts: Set<string>;
   totalParts: number;
-  capturedPhotos?: { partName: string; damageType: string; dataUrl: string; timestamp: Date }[];
+  capturedPhotos?: {
+    partName: string;
+    damageType: string;
+    dataUrl?: string;
+    imageUrl?: string;
+    timestamp: Date;
+  }[];
 }
 
-export function generateInspectionPdf({ vehicleLabel, damages, reviewedParts, totalParts, capturedPhotos = [] }: PdfParams) {
+async function photoToDataUrl(photo: {
+  dataUrl?: string;
+  imageUrl?: string;
+}): Promise<string | null> {
+  if (photo.dataUrl) return photo.dataUrl;
+  if (!photo.imageUrl) return null;
+  const res = await fetch(photo.imageUrl);
+  if (!res.ok) return null;
+  const blob = await res.blob();
+  return new Promise((resolve) => {
+    const r = new FileReader();
+    r.onload = () => resolve(typeof r.result === "string" ? r.result : null);
+    r.readAsDataURL(blob);
+  });
+}
+
+export async function generateInspectionPdf({
+  vehicleLabel,
+  damages,
+  reviewedParts,
+  totalParts,
+  capturedPhotos = [],
+}: PdfParams) {
   const doc = new jsPDF();
   const pageW = doc.internal.pageSize.getWidth();
   let y = 20;
@@ -90,7 +118,8 @@ export function generateInspectionPdf({ vehicleLabel, damages, reviewedParts, to
     margin: { left: 14, right: 14 },
   });
 
-  y = (doc as any).lastAutoTable.finalY + 10;
+  const lastY = (doc as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY;
+  y = (typeof lastY === "number" ? lastY : y) + 10;
 
   // Photos section
   if (capturedPhotos.length > 0) {
@@ -104,7 +133,8 @@ export function generateInspectionPdf({ vehicleLabel, damages, reviewedParts, to
     const imgH = 40;
     let x = 14;
 
-    capturedPhotos.forEach((photo, i) => {
+    for (let i = 0; i < capturedPhotos.length; i++) {
+      const photo = capturedPhotos[i];
       if (x + imgW > pageW - 14) {
         x = 14;
         y += imgH + 12;
@@ -115,15 +145,18 @@ export function generateInspectionPdf({ vehicleLabel, damages, reviewedParts, to
         x = 14;
       }
       try {
-        doc.addImage(photo.dataUrl, 'JPEG', x, y, imgW, imgH);
+        const dataUrl = await photoToDataUrl(photo);
+        if (!dataUrl) continue;
+        const fmt = dataUrl.includes("image/png") ? "PNG" : "JPEG";
+        doc.addImage(dataUrl, fmt, x, y, imgW, imgH);
         doc.setFontSize(7);
-        doc.setFont('helvetica', 'normal');
-        doc.text(`${photo.partName} — ${photo.damageType ?? 'Photo'}`, x, y + imgH + 3);
+        doc.setFont("helvetica", "normal");
+        doc.text(`${photo.partName} — ${photo.damageType ?? "Photo"}`, x, y + imgH + 3);
       } catch {
-        // skip if image can't be embedded
+        /* skip if image can't be embedded */
       }
       x += imgW + 8;
-    });
+    }
   }
 
   doc.save(`inspection-${vehicleLabel.replace(/\s+/g, '-').toLowerCase()}.pdf`);
