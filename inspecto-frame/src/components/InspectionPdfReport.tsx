@@ -1,5 +1,6 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { appendUveyeApiKeyToImageUrl, isUveyeApiImageUrl } from '@/services/uveyeApi';
 
 interface Damage {
   id: number;
@@ -32,7 +33,9 @@ async function photoToDataUrl(photo: {
 }): Promise<string | null> {
   if (photo.dataUrl) return photo.dataUrl;
   if (!photo.imageUrl) return null;
-  const res = await fetch(photo.imageUrl);
+  const fetchUrl =
+    isUveyeApiImageUrl(photo.imageUrl) ? appendUveyeApiKeyToImageUrl(photo.imageUrl) : photo.imageUrl;
+  const res = await fetch(fetchUrl);
   if (!res.ok) return null;
   const blob = await res.blob();
   return new Promise((resolve) => {

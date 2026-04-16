@@ -65,6 +65,35 @@ export function isUveyeApiImageUrl(url: string): boolean {
   return u.includes(UVEYE_API_HOST) && /\/v1\/image/i.test(u);
 }
 
+/** True when requests go through same-origin `/uveye-api` (Netlify/Vercel proxy). False on `*.lovable.app` (direct UVeye). */
+export function uveyeUsesSameOriginProxy(): boolean {
+  return useUveyeSameOriginProxy();
+}
+
+/**
+ * Append API key as a query param so cross-origin &lt;img src&gt; works without a credentialed fetch (avoids CORS on Lovable).
+ * UVeye image GET accepts auth via `key` query (same value as API key / `uveye-api-key` header).
+ */
+export function appendUveyeApiKeyToImageUrl(url: string): string {
+  const key = getUveyeApiKey();
+  try {
+    const raw = url.trim();
+    const absolute = raw.startsWith('//') ? `https:${raw}` : raw;
+    const parsed = new URL(absolute);
+    if (parsed.hostname !== UVEYE_API_HOST || !/\/v1\/image/i.test(parsed.pathname)) {
+      return url;
+    }
+    if (parsed.searchParams.has('uveye-api-key') || parsed.searchParams.has('key')) {
+      return raw.startsWith('//') ? `//${parsed.host}${parsed.pathname}${parsed.search}` : parsed.toString();
+    }
+    const qp = import.meta.env.VITE_UVEYE_IMAGE_KEY_QUERY?.trim() || 'key';
+    parsed.searchParams.set(qp, key);
+    return raw.startsWith('//') ? `//${parsed.host}${parsed.pathname}${parsed.search}` : parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
 /** In-memory blob URL cache (session lifetime; speeds up revisiting frames). */
 const imageBlobUrlCache = new Map<string, string>();
 
@@ -92,6 +121,12 @@ export function prefetchUveyeImages(urls: (string | undefined)[]): void {
   for (const u of urls) {
     if (!u?.trim()) continue;
     if (!isUveyeApiImageUrl(u)) continue;
+    if (!useUveyeSameOriginProxy()) {
+      const img = new Image();
+      img.referrerPolicy = 'no-referrer';
+      img.src = appendUveyeApiKeyToImageUrl(u);
+      continue;
+    }
     const reqUrl = resolveUveyeRequestUrl(u);
     if (imageBlobUrlCache.has(reqUrl)) continue;
     fetchUveyeImageBlobUrl(u).catch(() => {});

@@ -1,5 +1,10 @@
 import { useEffect, useState } from "react";
-import { fetchUveyeImageBlobUrl, isUveyeApiImageUrl } from "@/services/uveyeApi";
+import {
+  appendUveyeApiKeyToImageUrl,
+  fetchUveyeImageBlobUrl,
+  isUveyeApiImageUrl,
+  uveyeUsesSameOriginProxy,
+} from "@/services/uveyeApi";
 import { cn } from "@/lib/utils";
 
 interface Props extends React.ImgHTMLAttributes<HTMLImageElement> {
@@ -7,7 +12,7 @@ interface Props extends React.ImgHTMLAttributes<HTMLImageElement> {
 }
 
 /**
- * Loads UVeye `v1/image` URLs with the API key (plain &lt;img&gt; cannot send headers).
+ * Loads UVeye `v1/image` URLs: same-origin proxy uses fetch + blob; direct (e.g. Lovable) uses API key in query so &lt;img&gt; loads without CORS-blocked fetch.
  */
 export default function UveyeAuthenticatedImage({ src, className, alt, onError, ...rest }: Props) {
   const [resolved, setResolved] = useState<string | null>(null);
@@ -25,8 +30,14 @@ export default function UveyeAuthenticatedImage({ src, className, alt, onError, 
 
     let cancelled = false;
     setFailed(false);
-    setResolved(null);
 
+    /** Direct UVeye from browser: credentialed fetch triggers CORS; img + query auth does not. */
+    if (!uveyeUsesSameOriginProxy()) {
+      setResolved(appendUveyeApiKeyToImageUrl(src));
+      return undefined;
+    }
+
+    setResolved(null);
     fetchUveyeImageBlobUrl(src)
       .then((url) => {
         if (!cancelled) setResolved(url);
@@ -67,6 +78,7 @@ export default function UveyeAuthenticatedImage({ src, className, alt, onError, 
   return (
     <img
       src={resolved}
+      referrerPolicy="no-referrer"
       className={className}
       alt={alt ?? ""}
       onError={(e) => {
