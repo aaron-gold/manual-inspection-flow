@@ -16,17 +16,21 @@ import {
   type UveyeCameraFrame,
 } from '@/services/uveyeApi';
 import InspectionViewportImage from '@/components/InspectionViewportImage';
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { useIsMobile } from '@/hooks/use-mobile';
 import { cn } from '@/lib/utils';
 import {
   AlertTriangle,
   ChevronLeft,
   ChevronRight,
   ChevronDown,
+  ChevronUp,
   X,
   Plus,
   Check,
   PanelRightOpen,
   PanelRightClose,
+  LayoutGrid,
   Camera,
   FileText,
   Link as LinkIcon,
@@ -185,8 +189,22 @@ export default function AssistedInspectionV3({
   const [customParts, setCustomParts] = useState<CarPart[]>([]);
   const [showAddPartArea, setShowAddPartArea] = useState<Area | null>(null);
   const [newPartName, setNewPartName] = useState('');
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  /** Desktop: open by default. Mobile: closed so the main area is usable (see initializer). */
+  const [sidebarOpen, setSidebarOpen] = useState(
+    () => typeof window !== 'undefined' && window.innerWidth >= 768,
+  );
   const [viewportZoom, setViewportZoom] = useState(1);
+  const isMobile = useIsMobile();
+
+  /** Vehicle map panel: hide diagram so the parts list scroll area gets more room (default collapsed on small screens). */
+  const [mapDiagramCollapsed, setMapDiagramCollapsed] = useState(
+    () => typeof window !== 'undefined' && window.innerWidth < 768,
+  );
+
+  /** When false on mobile, part title + damage strip collapse to a thin bar so the image fills the screen. */
+  const [partDetailExpanded, setPartDetailExpanded] = useState(
+    () => typeof window === 'undefined' || window.innerWidth >= 768,
+  );
 
   // Camera capture state
   const [showCameraCapture, setShowCameraCapture] = useState(false);
@@ -275,6 +293,7 @@ export default function AssistedInspectionV3({
     setSelectedDamageIdx(0);
     setViewportZoom(1);
     setReviewedParts(prev => new Set(prev).add(part.name));
+    if (isMobile) setSidebarOpen(false);
   };
 
   const toggleDuplicate = (id: number) => {
@@ -355,6 +374,12 @@ export default function AssistedInspectionV3({
     setViewportZoom(1);
   }, [currentFrame?.id]);
 
+  /** New part on mobile: start in image-focus (compact) mode. */
+  useEffect(() => {
+    if (!activePart) return;
+    setPartDetailExpanded(!isMobile);
+  }, [activePart?.name, isMobile]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
@@ -429,6 +454,193 @@ export default function AssistedInspectionV3({
     );
   }
 
+  const renderVehicleMapSidebar = () => (
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      {/* Toolbar stays fixed; diagram + parts share one scroll (full diagram when shown — never clipped in its own scroll box). */}
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-2">
+        <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Vehicle Map</span>
+        <button
+          type="button"
+          onClick={() => setMapDiagramCollapsed((v) => !v)}
+          className="shrink-0 rounded-md px-2 py-1 text-[11px] font-medium text-primary hover:bg-primary/10"
+        >
+          {mapDiagramCollapsed ? 'Show diagram' : 'Hide diagram'}
+        </button>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch] touch-pan-y">
+        {!mapDiagramCollapsed && (
+          <div className="border-b border-border px-2 pb-4 pt-1">
+            <div className="flex justify-center">
+              <MiniCarDiagram
+                activePart={activePart}
+                reviewedParts={reviewedParts}
+                damages={damages}
+                onSelectPart={selectPart}
+                vehicleType={vehicleType}
+                onDoubleClickPart={(partName) => {
+                  setReviewedParts((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(partName)) next.delete(partName);
+                    else next.add(partName);
+                    return next;
+                  });
+                }}
+              />
+            </div>
+          </div>
+        )}
+        <div className="px-3 py-2">
+          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Parts</span>
+        </div>
+        <div className="space-y-0.5 px-2 pb-4">
+          {ALL_AREAS.map((area) => {
+            const areaParts = allParts.filter((p) => p.area === area);
+            const areaHasDamage = areaParts.some((p) => getPartHasDamage(p.name));
+            const areaDamageCount = areaParts.reduce((sum, p) => sum + getPartDamageCount(p.name), 0);
+            const reviewedCount = areaParts.filter((p) => reviewedParts.has(p.name)).length;
+            const isExpanded = expandedArea === area || activePart?.area === area;
+
+            return (
+              <div key={area}>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const allDone = areaParts.every((p) => reviewedParts.has(p.name));
+                      setReviewedParts((prev) => {
+                        const next = new Set(prev);
+                        areaParts.forEach((p) => {
+                          if (allDone) next.delete(p.name);
+                          else next.add(p.name);
+                        });
+                        return next;
+                      });
+                    }}
+                    className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-all
+                      ${reviewedCount === areaParts.length ? 'bg-primary border-primary'
+                        : reviewedCount > 0 ? 'bg-primary/30 border-primary/50'
+                        : 'border-border hover:border-primary/50'}`}
+                  >
+                    {reviewedCount === areaParts.length && <Check size={10} className="text-primary-foreground" />}
+                    {reviewedCount > 0 && reviewedCount < areaParts.length && (
+                      <div className="w-1.5 h-0.5 bg-primary-foreground rounded" />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setExpandedArea(isExpanded && expandedArea === area ? null : area)}
+                    className={`flex-1 flex items-center justify-between px-2 py-1.5 rounded-lg text-xs font-semibold transition-colors
+                      ${isExpanded ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-accent'}`}
+                  >
+                    <span className="flex items-center gap-2">
+                      <ChevronDown size={12} className={`transition-transform ${isExpanded ? '' : '-rotate-90'}`} />
+                      {area}
+                      {areaHasDamage && <span className="w-1.5 h-1.5 rounded-full bg-destructive" />}
+                      {areaDamageCount > 0 && (
+                        <span className="min-w-[16px] h-[16px] rounded-full bg-destructive text-background flex items-center justify-center text-[9px] font-bold">
+                          {areaDamageCount}
+                        </span>
+                      )}
+                    </span>
+                    <span className="text-[10px] text-muted-foreground">
+                      {reviewedCount}/{areaParts.length}
+                    </span>
+                  </button>
+                </div>
+
+                {isExpanded && (
+                  <div className="ml-5 mt-0.5 space-y-0.5">
+                    {areaParts.map((part) => {
+                      const dmgCount = getPartDamageCount(part.name);
+                      const isActive = activePart?.name === part.name;
+                      const reviewed = reviewedParts.has(part.name);
+                      return (
+                        <div key={part.name} className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={(e) => toggleWalkaroundCheck(part.name, e)}
+                            className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-all
+                              ${reviewed ? 'bg-primary border-primary' : 'border-border hover:border-primary/50'}`}
+                          >
+                            {reviewed && <Check size={10} className="text-primary-foreground" />}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => selectPart(part)}
+                            className={`flex-1 flex items-center justify-between px-2 py-1 rounded-md text-xs transition-all
+                              ${isActive ? 'bg-primary text-primary-foreground font-bold'
+                                : reviewed ? 'text-primary/80 hover:bg-primary/5 font-medium line-through opacity-70'
+                                : dmgCount === 0 ? 'text-muted-foreground/50 hover:bg-accent font-medium opacity-40'
+                                : 'text-foreground hover:bg-accent font-medium'}`}
+                          >
+                            <span className="truncate">{part.name}</span>
+                            {dmgCount > 0 && (
+                              <span
+                                className={`min-w-[14px] h-[14px] rounded-full flex items-center justify-center text-[8px] font-bold
+                                ${isActive ? 'bg-primary-foreground/20 text-primary-foreground' : 'bg-destructive text-background'}`}
+                              >
+                                {dmgCount}
+                              </span>
+                            )}
+                          </button>
+                        </div>
+                      );
+                    })}
+                    {showAddPartArea === area ? (
+                      <div className="border border-border rounded-lg p-2 space-y-2 mt-1">
+                        <input
+                          type="text"
+                          value={newPartName}
+                          onChange={(e) => setNewPartName(e.target.value)}
+                          placeholder="Part name..."
+                          autoFocus
+                          onKeyDown={(e) => e.key === 'Enter' && addCustomPart(area)}
+                          className="w-full px-2 py-1.5 text-xs rounded-md border border-input bg-background text-foreground placeholder:text-muted-foreground"
+                        />
+                        <div className="flex gap-1">
+                          <button
+                            type="button"
+                            onClick={() => addCustomPart(area)}
+                            className="flex-1 px-2 py-1 text-xs font-medium bg-primary text-primary-foreground rounded-md"
+                          >
+                            Add
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowAddPartArea(null);
+                              setNewPartName('');
+                            }}
+                            className="px-2 py-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowAddPartArea(area);
+                          setNewPartName('');
+                        }}
+                        className="w-full flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground transition-colors mt-0.5"
+                      >
+                        <Plus size={10} /> Add Part
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+
   return (
     <div className="flex flex-col h-screen w-full bg-muted font-sans text-foreground overflow-hidden">
       {/* Camera Capture Modal */}
@@ -444,11 +656,12 @@ export default function AssistedInspectionV3({
         />
       )}
 
-      <div className="flex items-center justify-between px-5 py-3 bg-card border-b border-border shrink-0">
-        <div className="flex items-center gap-3">
+      {/* Desktop / tablet header */}
+      <div className="hidden md:flex items-center justify-between px-5 py-3 bg-card border-b border-border shrink-0 gap-4">
+        <div className="flex items-center gap-3 min-w-0">
           {damages.length > 0 && (
             <div
-              className="flex items-center gap-1.5 rounded-lg border border-border bg-destructive/10 px-2.5 py-1.5 text-destructive"
+              className="flex items-center gap-1.5 rounded-lg border border-border bg-destructive/10 px-2.5 py-1.5 text-destructive shrink-0"
               title="Total AI / manual detections across all panels"
             >
               <AlertTriangle size={14} className="shrink-0" aria-hidden />
@@ -458,15 +671,15 @@ export default function AssistedInspectionV3({
           {onBack && (
             <button
               onClick={onBack}
-              className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors mr-1"
+              className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors shrink-0"
               title="Back to inspections"
             >
               <ChevronLeft size={18} />
             </button>
           )}
-          <div className="w-9 h-9 bg-foreground rounded-lg flex items-center justify-center text-background font-bold text-xs">UV</div>
+          <div className="w-9 h-9 bg-foreground rounded-lg flex items-center justify-center text-background font-bold text-xs shrink-0">UV</div>
           <div className="min-w-0">
-            <h1 className="font-bold text-base tracking-tight">{vehicleLabel || 'AutoInspect'}</h1>
+            <h1 className="font-bold text-base tracking-tight truncate">{vehicleLabel || 'AutoInspect'}</h1>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
               <p className="text-xs text-muted-foreground">FEP092 FL</p>
               {summaryPortalUrl && (
@@ -483,7 +696,7 @@ export default function AssistedInspectionV3({
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 lg:gap-3 shrink-0 flex-wrap justify-end">
           <button
             type="button"
             onClick={() => setShowCameraCapture(true)}
@@ -525,12 +738,102 @@ export default function AssistedInspectionV3({
             )}
           </div>
           <button
+            type="button"
             onClick={() => setSidebarOpen(!sidebarOpen)}
             className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-            title={sidebarOpen ? 'Hide panel' : 'Show panel'}
+            title={sidebarOpen ? 'Hide vehicle map' : 'Show vehicle map'}
           >
             {sidebarOpen ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}
           </button>
+        </div>
+      </div>
+
+      {/* Mobile header — stacked rows, icon actions */}
+      <div className="flex md:hidden flex-col gap-2 px-3 py-2.5 bg-card border-b border-border shrink-0">
+        <div className="flex items-center gap-2 min-w-0">
+          {damages.length > 0 && (
+            <div
+              className="flex items-center gap-1 rounded-lg border border-border bg-destructive/10 px-2 py-1 text-destructive shrink-0"
+              title="Total detections"
+            >
+              <AlertTriangle size={14} aria-hidden />
+              <span className="text-xs font-bold tabular-nums">{damages.length}</span>
+            </div>
+          )}
+          {onBack && (
+            <button
+              type="button"
+              onClick={onBack}
+              className="p-1.5 rounded-lg text-muted-foreground hover:bg-accent shrink-0"
+              title="Back"
+            >
+              <ChevronLeft size={20} />
+            </button>
+          )}
+          <div className="w-8 h-8 bg-foreground rounded-lg flex items-center justify-center text-background font-bold text-[10px] shrink-0">UV</div>
+          <h1 className="font-bold text-sm leading-tight truncate flex-1 min-w-0">{vehicleLabel || 'AutoInspect'}</h1>
+          <button
+            type="button"
+            onClick={() => setShowCameraCapture(true)}
+            className="p-2 rounded-lg border border-border text-muted-foreground hover:bg-accent shrink-0"
+            title="Add photo"
+          >
+            <Camera size={18} />
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowSummary(true)}
+            className="p-2 rounded-lg border border-border text-muted-foreground hover:bg-accent shrink-0"
+            title="Summary"
+          >
+            <FileText size={18} />
+          </button>
+          <button
+            type="button"
+            onClick={() => setSidebarOpen(true)}
+            className="p-2 rounded-lg border border-primary/30 bg-primary/10 text-primary hover:bg-primary/15 shrink-0"
+            title="Vehicle map & parts"
+          >
+            <LayoutGrid size={18} />
+          </button>
+        </div>
+        <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+          {summaryPortalUrl ? (
+            <a
+              href={summaryPortalUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-primary font-medium truncate min-w-0"
+            >
+              <ExternalLink size={11} className="shrink-0" />
+              <span className="truncate">UVeye summary</span>
+            </a>
+          ) : (
+            <span />
+          )}
+          <span className="shrink-0 tabular-nums text-foreground font-medium">
+            {reviewedParts.size}/{allParts.length} parts
+          </span>
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <div className="h-1.5 flex-1 min-w-[100px] bg-muted rounded-full overflow-hidden">
+            <div
+              className="h-full bg-primary rounded-full transition-all"
+              style={{ width: `${(reviewedParts.size / allParts.length) * 100}%` }}
+            />
+          </div>
+          <span className="text-[10px] bg-accent text-accent-foreground px-1.5 py-0.5 rounded font-medium">{confirmedCount} ✓</span>
+          <span className="text-[10px] bg-destructive/10 text-destructive px-1.5 py-0.5 rounded font-medium">{dismissedCount} ✗</span>
+          {duplicateCount > 0 && (
+            <span className="text-[10px] bg-blue-600 text-white px-1.5 py-0.5 rounded font-medium inline-flex items-center gap-0.5">
+              <Copy size={10} /> {duplicateCount}
+            </span>
+          )}
+          {flaggedCount > 0 && (
+            <span className="text-[10px] bg-amber-500/15 text-amber-800 dark:text-amber-200 px-1.5 py-0.5 rounded font-medium inline-flex items-center gap-0.5">
+              <Flag size={9} /> {flaggedCount}
+            </span>
+          )}
         </div>
       </div>
 
@@ -540,27 +843,128 @@ export default function AssistedInspectionV3({
         <div className="flex-1 flex flex-col min-h-0 min-w-0 relative">
           {activePart ? (
             <>
-              {/* Part header bar */}
-              <div className="flex items-center justify-between px-4 py-2 bg-card/80 backdrop-blur border-b border-border shrink-0">
-                <div>
-                  <h2 className="font-bold text-foreground text-lg">{activePart.name}</h2>
-                  <p className="text-xs text-muted-foreground">
-                    {currentFrame ? `${currentFrame.camera} • Frame ${currentFrame.frameNum}` : 'No images'} • {partFrames.length} image{partFrames.length !== 1 ? 's' : ''} • {partDamages.length} detection{partDamages.length !== 1 ? 's' : ''}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
+              {/* Mobile image-focus: single thin bar + quick actions */}
+              {isMobile && !partDetailExpanded && (
+                <div className="flex items-center gap-1.5 border-b border-border bg-card/95 px-2 py-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setPartDetailExpanded(true)}
+                    className="shrink-0 rounded-lg p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
+                    title="Show full details"
+                    aria-label="Show full details"
+                  >
+                    <ChevronDown size={18} />
+                  </button>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-semibold text-foreground">{activePart.name}</p>
+                    <p className="truncate text-[11px] text-muted-foreground">
+                      {partDamages.length > 0
+                        ? (() => {
+                            const d = partDamages[Math.min(selectedDamageIdx, partDamages.length - 1)];
+                            return d ? d.damageName || d.type || 'Detection' : '';
+                          })()
+                        : currentFrame
+                          ? `${currentFrame.camera} · f${currentFrame.frameNum}`
+                          : 'No image'}
+                    </p>
+                  </div>
+                  {partDamages.length > 0 &&
+                    (() => {
+                      const clampedIdx = Math.min(selectedDamageIdx, partDamages.length - 1);
+                      const dmg = partDamages[clampedIdx];
+                      if (!dmg) return null;
+                      return (
+                        <div className="flex shrink-0 items-center gap-0.5">
+                          <button
+                            type="button"
+                            title="Approve"
+                            onClick={() => setDamageConfirmed(dmg.id, true)}
+                            className={`rounded-md p-1.5 ${dmg.confirmed === true ? 'text-primary' : 'text-muted-foreground hover:bg-primary/10'}`}
+                          >
+                            <CheckCircle size={18} />
+                          </button>
+                          <button
+                            type="button"
+                            title="Reject"
+                            onClick={() => setDamageConfirmed(dmg.id, false)}
+                            className={`rounded-md p-1.5 ${dmg.confirmed === false ? 'text-destructive' : 'text-muted-foreground hover:bg-destructive/10'}`}
+                          >
+                            <XCircle size={18} />
+                          </button>
+                          <button
+                            type="button"
+                            title="Duplicate"
+                            onClick={() => toggleDuplicate(dmg.id)}
+                            className={`rounded-md p-1.5 ${dmg.isDuplicate ? 'text-blue-600' : 'text-muted-foreground hover:bg-muted'}`}
+                          >
+                            <Copy size={16} />
+                          </button>
+                          <button
+                            type="button"
+                            title="Flag"
+                            onClick={() => toggleFlag(dmg.id)}
+                            className={`rounded-md p-1.5 ${dmg.flagged ? 'text-amber-600' : 'text-muted-foreground hover:bg-muted'}`}
+                          >
+                            <Flag size={16} />
+                          </button>
+                        </div>
+                      );
+                    })()}
                   <button
                     type="button"
                     onClick={() => setShowCameraCapture(true)}
-                    className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold transition-all active:scale-95 bg-accent text-accent-foreground"
-                    title="Take photo or upload from gallery"
+                    className="shrink-0 rounded-lg border border-border p-2 text-muted-foreground hover:bg-accent"
+                    title="Photo"
                   >
-                    <Camera size={14} /> Photo
+                    <Camera size={16} />
                   </button>
                   <button
                     type="button"
                     onClick={() => setActivePart(null)}
-                    className="text-xs font-medium text-muted-foreground hover:text-foreground px-2 py-1.5 rounded-lg transition-colors"
+                    className="shrink-0 rounded-lg px-2 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
+                  >
+                    Close
+                  </button>
+                </div>
+              )}
+
+              {/* Part header bar + damage strip (full — desktop always; mobile when expanded) */}
+              {(partDetailExpanded || !isMobile) && (
+              <>
+              <div className="flex items-center justify-between gap-2 px-3 py-2 sm:px-4 bg-card/80 backdrop-blur border-b border-border shrink-0">
+                <div className="flex min-w-0 flex-1 items-start gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPartDetailExpanded(false)}
+                    className="mt-0.5 hidden shrink-0 rounded-lg p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground md:hidden"
+                    title="Focus on image"
+                    aria-label="Focus on image"
+                  >
+                    <ChevronUp size={18} />
+                  </button>
+                  <div className="min-w-0">
+                    <h2 className="text-base font-bold text-foreground sm:text-lg">{activePart.name}</h2>
+                    <p className="hidden text-xs text-muted-foreground md:block">
+                      {currentFrame ? `${currentFrame.camera} • Frame ${currentFrame.frameNum}` : 'No images'} • {partFrames.length} image{partFrames.length !== 1 ? 's' : ''} • {partDamages.length} detection{partDamages.length !== 1 ? 's' : ''}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground md:hidden truncate">
+                      {currentFrame ? `${currentFrame.camera} · f${currentFrame.frameNum}` : 'No images'} · {partFrames.length} img · {partDamages.length} det
+                    </p>
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowCameraCapture(true)}
+                    className="flex items-center gap-2 rounded-xl bg-accent px-3 py-2 text-xs font-semibold text-accent-foreground transition-all active:scale-95"
+                    title="Take photo or upload from gallery"
+                  >
+                    <Camera size={14} /> <span className="hidden sm:inline">Photo</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActivePart(null)}
+                    className="rounded-lg px-2 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
                   >
                     Close
                   </button>
@@ -574,7 +978,7 @@ export default function AssistedInspectionV3({
                 if (!dmg) return null;
                 const dmgFrame = allFrames.find(f => f.id === dmg.frameId);
                 return (
-                  <div className="flex flex-wrap items-center gap-3 px-4 py-2 bg-card border-b border-border shrink-0">
+                  <div className="flex max-h-[40vh] touch-pan-y flex-wrap items-center gap-2 overflow-y-auto overscroll-contain border-b border-border bg-card px-3 py-2 shrink-0 md:max-h-none md:gap-3 md:px-4">
                     {/* Navigation between damages */}
                     <div className="flex items-center gap-1.5 shrink-0">
                       <button
@@ -595,13 +999,13 @@ export default function AssistedInspectionV3({
                     </div>
 
                     {/* Damage info — name from API + classification `type` */}
-                    <div className="flex-1 min-w-0">
+                    <div className="min-w-0 flex-1">
                       {dmg.damageName ? (
-                        <p className="text-base font-bold text-foreground leading-snug break-words" title={dmg.damageName}>
+                        <p className="text-sm font-bold leading-snug text-foreground break-words md:text-base" title={dmg.damageName}>
                           {dmg.damageName}
                         </p>
                       ) : null}
-                      <p className={`font-semibold text-foreground ${dmg.damageName ? 'text-sm mt-0.5' : 'text-base'}`}>
+                      <p className={`font-semibold text-foreground ${dmg.damageName ? 'mt-0.5 text-sm md:text-base' : 'text-sm md:text-base'}`}>
                         <span className="text-muted-foreground font-normal text-xs mr-1.5">Type</span>
                         {dmg.type || '—'}
                       </p>
@@ -733,6 +1137,8 @@ export default function AssistedInspectionV3({
                   </div>
                 );
               })()}
+              </>
+              )}
 
               <div className="flex-1 relative bg-viewport flex flex-col min-h-0">
                 <div
@@ -785,7 +1191,7 @@ export default function AssistedInspectionV3({
                     </button>
                   </div>
                 )}
-                <div className="pointer-events-none absolute bottom-14 left-1/2 -translate-x-1/2 z-10 text-[10px] text-background/80 bg-foreground/30 px-2 py-0.5 rounded-full max-w-[90%] text-center">
+                <div className="pointer-events-none absolute bottom-14 left-1/2 -translate-x-1/2 z-10 hidden sm:block text-[10px] text-background/80 bg-foreground/30 px-2 py-0.5 rounded-full max-w-[90%] text-center">
                   ← → frames · scroll zooms when fit · when zoomed scroll pans, Ctrl+scroll zooms · drag to pan
                 </div>
 
@@ -842,159 +1248,56 @@ export default function AssistedInspectionV3({
             </>
           ) : (
             /* Empty state when no part selected */
-            <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground px-8">
+            <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground px-6 sm:px-8">
               <div className="w-16 h-16 rounded-2xl bg-muted flex items-center justify-center mb-4">
                 <AlertTriangle size={28} className="opacity-30" />
               </div>
-              <h2 className="text-xl font-bold text-foreground mb-2 text-center">Select a part to inspect</h2>
-              <p className="text-sm text-center max-w-xs">Pick a part from the vehicle diagram or the list on the right.</p>
+              <h2 className="text-lg sm:text-xl font-bold text-foreground mb-2 text-center px-2">
+                Select a part to inspect
+              </h2>
+              <p className="text-sm text-center max-w-xs">
+                <span className="hidden md:inline">
+                  Pick a part from the vehicle diagram or the list on the right.
+                </span>
+                <span className="md:hidden">
+                  Tap <strong className="text-foreground">Map</strong> in the header to open the vehicle diagram and parts list.
+                </span>
+              </p>
+              <button
+                type="button"
+                onClick={() => setSidebarOpen(true)}
+                className="md:hidden mt-5 inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-primary text-primary-foreground text-sm font-semibold shadow-sm active:scale-[0.98] transition-transform"
+              >
+                <LayoutGrid size={18} />
+                Open vehicle map
+              </button>
             </div>
           )}
         </div>
 
-        {/* COLLAPSIBLE RIGHT SIDEBAR */}
-        <div className={`bg-card border-l border-border flex flex-col shrink-0 transition-all duration-300 overflow-hidden ${sidebarOpen ? 'w-[320px]' : 'w-0'}`}>
-          {sidebarOpen && (
-            <>
-              {/* Top section: Vehicle Diagram */}
-              <div className="border-b border-border shrink-0">
-                <div className="px-3 py-2 flex items-center justify-between">
-                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Vehicle Map</span>
-                </div>
-                <div className="flex justify-center pb-3 px-2">
-                  <MiniCarDiagram
-                    activePart={activePart}
-                    reviewedParts={reviewedParts}
-                    damages={damages}
-                    onSelectPart={selectPart}
-                    vehicleType={vehicleType}
-                    onDoubleClickPart={(partName) => {
-                      setReviewedParts(prev => {
-                        const next = new Set(prev);
-                        if (next.has(partName)) next.delete(partName);
-                        else next.add(partName);
-                        return next;
-                      });
-                    }}
-                  />
-                </div>
-              </div>
+        {/* Mobile: vehicle map + parts in a sheet (main column stays full width) */}
+        {isMobile && (
+          <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
+            <SheetContent
+              side="right"
+              className="w-[min(100vw,22rem)] sm:max-w-md p-0 gap-0 flex flex-col h-[100dvh] max-h-[100dvh] overflow-hidden border-l bg-card"
+            >
+              <SheetHeader className="px-4 py-3 border-b border-border shrink-0 space-y-0 text-left">
+                <SheetTitle className="text-base pr-8">Vehicle map & parts</SheetTitle>
+              </SheetHeader>
+              <div className="flex flex-1 flex-col min-h-0 overflow-hidden bg-card">{renderVehicleMapSidebar()}</div>
+            </SheetContent>
+          </Sheet>
+        )}
 
-              {/* Bottom section: Parts list */}
-              <div className="flex-1 overflow-y-auto">
-                <div className="px-3 py-2">
-                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Parts</span>
-                </div>
-                <div className="px-2 pb-4 space-y-0.5">
-                  {ALL_AREAS.map(area => {
-                    const areaParts = allParts.filter(p => p.area === area);
-                    const areaHasDamage = areaParts.some(p => getPartHasDamage(p.name));
-                    const areaDamageCount = areaParts.reduce((sum, p) => sum + getPartDamageCount(p.name), 0);
-                    const reviewedCount = areaParts.filter(p => reviewedParts.has(p.name)).length;
-                    const isExpanded = expandedArea === area || activePart?.area === area;
-
-                    return (
-                      <div key={area}>
-                        <div className="flex items-center gap-1">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              const allDone = areaParts.every(p => reviewedParts.has(p.name));
-                              setReviewedParts(prev => {
-                                const next = new Set(prev);
-                                areaParts.forEach(p => { if (allDone) next.delete(p.name); else next.add(p.name); });
-                                return next;
-                              });
-                            }}
-                            className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-all
-                              ${reviewedCount === areaParts.length ? 'bg-primary border-primary'
-                                : reviewedCount > 0 ? 'bg-primary/30 border-primary/50'
-                                : 'border-border hover:border-primary/50'}`}
-                          >
-                            {reviewedCount === areaParts.length && <Check size={10} className="text-primary-foreground" />}
-                            {reviewedCount > 0 && reviewedCount < areaParts.length && <div className="w-1.5 h-0.5 bg-primary-foreground rounded" />}
-                          </button>
-                          <button
-                            onClick={() => setExpandedArea(isExpanded && expandedArea === area ? null : area)}
-                            className={`flex-1 flex items-center justify-between px-2 py-1.5 rounded-lg text-xs font-semibold transition-colors
-                              ${isExpanded ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-accent'}`}
-                          >
-                            <span className="flex items-center gap-2">
-                              <ChevronDown size={12} className={`transition-transform ${isExpanded ? '' : '-rotate-90'}`} />
-                              {area}
-                              {areaHasDamage && <span className="w-1.5 h-1.5 rounded-full bg-destructive" />}
-                              {areaDamageCount > 0 && (
-                                <span className="min-w-[16px] h-[16px] rounded-full bg-destructive text-background flex items-center justify-center text-[9px] font-bold">
-                                  {areaDamageCount}
-                                </span>
-                              )}
-                            </span>
-                            <span className="text-[10px] text-muted-foreground">{reviewedCount}/{areaParts.length}</span>
-                          </button>
-                        </div>
-
-                        {isExpanded && (
-                          <div className="ml-5 mt-0.5 space-y-0.5">
-                            {areaParts.map(part => {
-                              const dmgCount = getPartDamageCount(part.name);
-                              const isActive = activePart?.name === part.name;
-                              const reviewed = reviewedParts.has(part.name);
-                              return (
-                                <div key={part.name} className="flex items-center gap-1">
-                                  <button
-                                    onClick={(e) => toggleWalkaroundCheck(part.name, e)}
-                                    className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-all
-                                      ${reviewed ? 'bg-primary border-primary' : 'border-border hover:border-primary/50'}`}
-                                  >
-                                    {reviewed && <Check size={10} className="text-primary-foreground" />}
-                                  </button>
-                                  <button
-                                    onClick={() => selectPart(part)}
-                                    className={`flex-1 flex items-center justify-between px-2 py-1 rounded-md text-xs transition-all
-                                      ${isActive ? 'bg-primary text-primary-foreground font-bold'
-                                        : reviewed ? 'text-primary/80 hover:bg-primary/5 font-medium line-through opacity-70'
-                                        : dmgCount === 0 ? 'text-muted-foreground/50 hover:bg-accent font-medium opacity-40'
-                                        : 'text-foreground hover:bg-accent font-medium'}`}
-                                  >
-                                    <span className="truncate">{part.name}</span>
-                                    {dmgCount > 0 && (
-                                      <span className={`min-w-[14px] h-[14px] rounded-full flex items-center justify-center text-[8px] font-bold
-                                        ${isActive ? 'bg-primary-foreground/20 text-primary-foreground' : 'bg-destructive text-background'}`}>
-                                        {dmgCount}
-                                      </span>
-                                    )}
-                                  </button>
-                                </div>
-                              );
-                            })}
-                            {showAddPartArea === area ? (
-                              <div className="border border-border rounded-lg p-2 space-y-2 mt-1">
-                                <input type="text" value={newPartName} onChange={e => setNewPartName(e.target.value)}
-                                  placeholder="Part name..." autoFocus onKeyDown={e => e.key === 'Enter' && addCustomPart(area)}
-                                  className="w-full px-2 py-1.5 text-xs rounded-md border border-input bg-background text-foreground placeholder:text-muted-foreground"
-                                />
-                                <div className="flex gap-1">
-                                  <button onClick={() => addCustomPart(area)} className="flex-1 px-2 py-1 text-xs font-medium bg-primary text-primary-foreground rounded-md">Add</button>
-                                  <button onClick={() => { setShowAddPartArea(null); setNewPartName(''); }} className="px-2 py-1 text-xs font-medium text-muted-foreground hover:text-foreground">Cancel</button>
-                                </div>
-                              </div>
-                            ) : (
-                              <button
-                                onClick={() => { setShowAddPartArea(area); setNewPartName(''); }}
-                                className="w-full flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground transition-colors mt-0.5"
-                              >
-                                <Plus size={10} /> Add Part
-                              </button>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </>
+        {/* Desktop / tablet: collapsible right sidebar */}
+        <div
+          className={cn(
+            'hidden md:flex bg-card border-l border-border flex-col shrink-0 transition-all duration-300 overflow-hidden',
+            sidebarOpen ? 'w-[320px]' : 'w-0',
           )}
+        >
+          {sidebarOpen && <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">{renderVehicleMapSidebar()}</div>}
         </div>
       </div>
     </div>
