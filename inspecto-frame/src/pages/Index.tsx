@@ -97,7 +97,10 @@ export default function Index() {
   }, [hydrated, inspectorName, inspections, payloads, reviewStateById, capturesById]);
 
   const handleRetrieveFromApi = async (inspectionId: string) => {
-    const id = inspectionId.trim();
+    const id = inspectionId
+      .trim()
+      .replace(/^[\s"'“”‘’]+|[\s"'“”‘’]+$/g, "")
+      .trim();
     if (!id) return;
     setRetrieveError(null);
     setIsRetrieving(true);

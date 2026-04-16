@@ -613,11 +613,30 @@ function collectImageObjectArrays(r: UveyeInspectionResponse): unknown[][] {
   return out;
 }
 
+/** Detect SPA / error HTML returned instead of JSON (common when /uveye-api is not proxied on the host). */
+function parseUveyeInspectionResponseBody(text: string, requestUrl: string): unknown {
+  const start = text.trimStart();
+  if (start.startsWith("<") || start.toLowerCase().startsWith("<!doctype")) {
+    throw new Error(
+      "The server returned HTML instead of JSON (often the app shell). Your deployment must proxy POST /uveye-api/* to https://us.api.uveye.app — see public/_redirects and vercel.json in the repo, and ensure that rule runs before any SPA fallback. Request URL: " +
+        requestUrl,
+    );
+  }
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    throw new Error(
+      `Inspection response was not valid JSON (URL: ${requestUrl}). First 240 chars: ${text.slice(0, 240)}`,
+    );
+  }
+}
+
 export async function fetchUveyeInspection(
   body: UveyeRequestBody,
 ): Promise<UveyeInspectionResponse> {
+  const url = getInspectionPostUrl();
   const key = getUveyeApiKey();
-  const res = await fetch(getInspectionPostUrl(), {
+  const res = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -626,11 +645,17 @@ export async function fetchUveyeInspection(
     body: JSON.stringify(body),
   });
 
+  const text = await res.text().catch(() => "");
+
   if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`UVeye API error ${res.status}: ${text}`);
+    const hint =
+      text.trimStart().startsWith("<") || text.trimStart().toLowerCase().startsWith("<!doctype")
+        ? " (response looks like HTML — check /uveye-api proxy on your host)"
+        : "";
+    throw new Error(`UVeye API error ${res.status}${hint}: ${text.slice(0, 800)}`);
   }
-  const rawJson = await res.json();
+
+  const rawJson = parseUveyeInspectionResponseBody(text, url);
   const data = normalizeUveyeInspectionResponse(rawJson);
 
   if (import.meta.env.DEV) {
