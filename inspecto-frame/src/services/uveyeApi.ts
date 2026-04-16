@@ -1,8 +1,9 @@
 /**
  * UVeye Production API client.
  * Default key is embedded for internal deployments; override with `VITE_UVEYE_API_KEY` in `.env` if needed.
- * API and image requests use a same-origin path `/uveye-api` (Vite dev proxy + host rewrites in prod)
- * so the browser can send `uveye-api-key` without CORS blocking. Set `VITE_UVEYE_DIRECT=true` to call UVeye directly.
+ * API and image requests use a same-origin path `/uveye-api` (Vite dev proxy + host rewrites on Netlify/Vercel)
+ * so the browser can send `uveye-api-key` without CORS blocking.
+ * Lovable Cloud does not apply `public/_redirects`, so on `*.lovable.app` we call UVeye directly (same as `VITE_UVEYE_DIRECT=true`).
  */
 
 const UVEYE_ORIGIN = "https://us.api.uveye.app";
@@ -12,8 +13,19 @@ const UVEYE_API_KEY_DEFAULT = "P4CTPXN9morxPO2Qcr1ODjLsp6wJ7Frp";
 /** Same-origin proxy prefix — must match `vite.config.ts` and `public/_redirects` / `vercel.json`. */
 export const UVEYE_DEV_PROXY_PREFIX = '/uveye-api';
 
+/** Lovable’s static host returns the SPA for unknown paths, so `/uveye-api` is not proxied to UVeye. */
+function isLovableCloudHostname(): boolean {
+  if (typeof window === 'undefined') return false;
+  const h = window.location.hostname;
+  return h === 'lovable.app' || h.endsWith('.lovable.app');
+}
+
 function useUveyeSameOriginProxy(): boolean {
-  return import.meta.env.VITE_UVEYE_DIRECT !== 'true';
+  if (import.meta.env.VITE_UVEYE_DIRECT === 'true') return false;
+  /** Rare: Lovable custom domain + your own reverse proxy — force same-origin `/uveye-api`. */
+  if (import.meta.env.VITE_UVEYE_FORCE_PROXY === 'true') return true;
+  if (isLovableCloudHostname()) return false;
+  return true;
 }
 
 function getInspectionPostUrl(): string {
@@ -618,7 +630,7 @@ function parseUveyeInspectionResponseBody(text: string, requestUrl: string): unk
   const start = text.trimStart();
   if (start.startsWith("<") || start.toLowerCase().startsWith("<!doctype")) {
     throw new Error(
-      "The server returned HTML instead of JSON (often the app shell). Your deployment must proxy POST /uveye-api/* to https://us.api.uveye.app — see public/_redirects and vercel.json in the repo, and ensure that rule runs before any SPA fallback. Request URL: " +
+      "The server returned HTML instead of JSON (often the app shell). On Netlify/Vercel, proxy POST /uveye-api/* to https://us.api.uveye.app (see public/_redirects / vercel.json) before the SPA fallback. On Lovable, use a `*.lovable.app` URL (the app calls UVeye directly) or set VITE_UVEYE_DIRECT=true on other hosts. Request URL: " +
         requestUrl,
     );
   }
