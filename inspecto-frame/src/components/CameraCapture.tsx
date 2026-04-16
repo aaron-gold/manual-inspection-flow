@@ -25,6 +25,15 @@ interface CameraCaptureProps {
   onClose: () => void;
 }
 
+/** iOS/Android: getUserMedia is often blocked; `<input capture>` opens the native camera reliably. */
+function shouldUseNativeCameraCapture(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  if (/iP(hone|ad|od)/.test(ua)) return true;
+  if (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) return true;
+  return /Android/i.test(ua);
+}
+
 export default function CameraCapture({
   partNames,
   suggestedPartName,
@@ -32,6 +41,7 @@ export default function CameraCapture({
   onClose,
 }: CameraCaptureProps) {
   const galleryInputRef = useRef<HTMLInputElement>(null);
+  const cameraCaptureInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const [mode, setMode] = useState<'menu' | 'live' | 'details'>('menu');
@@ -67,8 +77,17 @@ export default function CameraCapture({
     setDamageType(MANUAL_DAMAGE_TYPES[0]);
   };
 
+  const openNativeCameraPicker = () => {
+    setError(null);
+    cameraCaptureInputRef.current?.click();
+  };
+
   const startCamera = async () => {
     setError(null);
+    if (shouldUseNativeCameraCapture()) {
+      openNativeCameraPicker();
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
@@ -86,7 +105,7 @@ export default function CameraCapture({
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Camera unavailable';
       setError(
-        `${msg}. On desktop, allow camera in the browser prompt; HTTPS or localhost is required.`,
+        `${msg}. Allow camera in the site settings, use HTTPS or localhost, or try “Choose from gallery”.`,
       );
     }
   };
@@ -291,7 +310,11 @@ export default function CameraCapture({
               </div>
               <div>
                 <span className="text-sm font-semibold text-foreground block">Use camera</span>
-                <span className="text-xs text-muted-foreground">Live preview, then capture</span>
+                <span className="text-xs text-muted-foreground">
+                  {shouldUseNativeCameraCapture()
+                    ? 'Opens your camera app, then continue here'
+                    : 'Live preview, then capture'}
+                </span>
               </div>
             </button>
 
@@ -315,6 +338,14 @@ export default function CameraCapture({
           ref={galleryInputRef}
           type="file"
           accept="image/*"
+          onChange={handleGalleryFile}
+          className="hidden"
+        />
+        <input
+          ref={cameraCaptureInputRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
           onChange={handleGalleryFile}
           className="hidden"
         />

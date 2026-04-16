@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/uveye-api/:path*",
+      "destination": "https://us.api.uveye.app/:path*"
+    }
+  ]
+}

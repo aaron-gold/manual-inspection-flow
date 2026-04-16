@@ -1,27 +1,32 @@
 /**
  * UVeye Production API client.
  * Default key is embedded for internal deployments; override with `VITE_UVEYE_API_KEY` in `.env` if needed.
- * In dev, API and image requests use the Vite proxy (see `vite.config.ts`) when targeting `us.api.uveye.app`.
+ * API and image requests use a same-origin path `/uveye-api` (Vite dev proxy + host rewrites in prod)
+ * so the browser can send `uveye-api-key` without CORS blocking. Set `VITE_UVEYE_DIRECT=true` to call UVeye directly.
  */
 
 const UVEYE_ORIGIN = "https://us.api.uveye.app";
 
 /** Internal default API key (visible in bundle—OK for trusted internal use only). */
 const UVEYE_API_KEY_DEFAULT = "P4CTPXN9morxPO2Qcr1ODjLsp6wJ7Frp";
-/** Dev-only path prefix — must match `vite.config.ts` `server.proxy` */
+/** Same-origin proxy prefix — must match `vite.config.ts` and `public/_redirects` / `vercel.json`. */
 export const UVEYE_DEV_PROXY_PREFIX = '/uveye-api';
 
+function useUveyeSameOriginProxy(): boolean {
+  return import.meta.env.VITE_UVEYE_DIRECT !== 'true';
+}
+
 function getInspectionPostUrl(): string {
-  return import.meta.env.DEV ? `${UVEYE_DEV_PROXY_PREFIX}/v1/inspection` : `${UVEYE_ORIGIN}/v1/inspection`;
+  if (!useUveyeSameOriginProxy()) return `${UVEYE_ORIGIN}/v1/inspection`;
+  return `${UVEYE_DEV_PROXY_PREFIX}/v1/inspection`;
 }
 
 /**
- * In dev, route API calls through the Vite proxy (same origin → no CORS).
- * In production, call UVeye directly (still subject to CORS unless you deploy a real backend proxy).
+ * Rewrite UVeye host URLs to `/uveye-api/...` so requests stay same-origin (avoids CORS in the browser).
  */
 export function resolveUveyeRequestUrl(url: string): string {
   const u = url.trim();
-  if (!import.meta.env.DEV) return u;
+  if (!useUveyeSameOriginProxy()) return u;
   try {
     const parsed = new URL(u.startsWith('//') ? `https:${u}` : u);
     if (parsed.hostname === 'us.api.uveye.app') {
@@ -44,7 +49,7 @@ function getUveyeApiKey(): string {
 export function isUveyeApiImageUrl(url: string): boolean {
   if (typeof url !== 'string' || !url.trim()) return false;
   const u = url.trim();
-  if (import.meta.env.DEV && u.startsWith(UVEYE_DEV_PROXY_PREFIX) && /\/v1\/image/i.test(u)) return true;
+  if (u.startsWith(UVEYE_DEV_PROXY_PREFIX) && /\/v1\/image/i.test(u)) return true;
   return u.includes(UVEYE_API_HOST) && /\/v1\/image/i.test(u);
 }
 

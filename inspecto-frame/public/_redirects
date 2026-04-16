@@ -1,0 +1,2 @@
+# Netlify / compatible hosts: proxy UVeye API under same origin so fetch() can send uveye-api-key (no CORS).
+/uveye-api/*  https://us.api.uveye.app/:splat  200
