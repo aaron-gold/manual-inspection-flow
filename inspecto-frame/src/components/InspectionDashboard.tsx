@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Car, Clock, CheckCircle, AlertTriangle, ChevronRight, Download, Loader2, Table2 } from 'lucide-react';
+import { Car, Clock, CheckCircle, AlertTriangle, ChevronRight, Download, Loader2, Table2, Trash2 } from 'lucide-react';
 
 export type BodyType = 'sedan' | 'truck';
 
@@ -34,6 +34,8 @@ interface Props {
   isExporting?: boolean;
   retrieveError?: string | null;
   exportError?: string | null;
+  /** Opens a confirmation flow (parent) to erase all locally stored inspections and related data. */
+  onRequestClearLocalData?: () => void;
 }
 
 export default function InspectionDashboard({
@@ -48,6 +50,7 @@ export default function InspectionDashboard({
   isExporting = false,
   retrieveError = null,
   exportError = null,
+  onRequestClearLocalData,
 }: Props) {
   const [inspectionId, setInspectionId] = useState('');
   const inProgress = inspections.filter(i => i.status === 'in_progress');
@@ -99,6 +102,16 @@ export default function InspectionDashboard({
                 </>
               )}
             </button>
+            {onRequestClearLocalData && (
+              <button
+                type="button"
+                onClick={onRequestClearLocalData}
+                className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-destructive/40 bg-card text-destructive text-sm font-medium hover:bg-destructive/10 transition-colors"
+              >
+                <Trash2 size={16} />
+                Clear local data…
+              </button>
+            )}
           </div>
         </div>
         {exportError && (
@@ -122,7 +135,7 @@ export default function InspectionDashboard({
           />
         </div>
 
-        {/* Retrieve from API */}
+        {/* Pull new inspection */}
         <div className="mb-10 p-5 rounded-xl border border-border bg-card shadow-sm">
           <h2 className="text-sm font-semibold text-foreground mb-1">Retrieve a scan</h2>
           <p className="text-xs text-muted-foreground mb-4">
@@ -146,12 +159,12 @@ export default function InspectionDashboard({
               {isRetrieving ? (
                 <>
                   <Loader2 size={16} className="animate-spin" />
-                  Retrieving…
+                  Pulling…
                 </>
               ) : (
                 <>
                   <Download size={16} />
-                  Retrieve from API
+                  Pull new inspection
                 </>
               )}
             </button>

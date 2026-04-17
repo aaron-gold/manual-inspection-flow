@@ -1,4 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
 import AssistedInspectionV3 from "@/components/AssistedInspectionV3";
 import InspectionDashboard, { type InspectionRecord } from "@/components/InspectionDashboard";
 import {
@@ -9,6 +19,7 @@ import {
 import {
   loadPersistedBundle,
   savePersistedBundle,
+  clearPersistedBundle,
   serializeRecord,
   deserializeRecord,
   toSerializedCaptures,
@@ -40,6 +51,8 @@ export default function Index() {
   const [isExporting, setIsExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const [dailyPreviewOpen, setDailyPreviewOpen] = useState(false);
+  const [clearDataDialogOpen, setClearDataDialogOpen] = useState(false);
+  const [isClearingLocalData, setIsClearingLocalData] = useState(false);
 
   const dailyPreview = useMemo(
     () =>
@@ -133,6 +146,24 @@ export default function Index() {
 
   const handleCaptureUpdate = useCallback((inspectionId: string, photos: CapturedPhotoEntry[]) => {
     setCapturesById((prev) => ({ ...prev, [inspectionId]: photos }));
+  }, []);
+
+  const handleConfirmClearLocalData = useCallback(async () => {
+    setIsClearingLocalData(true);
+    try {
+      await clearPersistedBundle();
+      setInspections([]);
+      setPayloads({});
+      setReviewStateById({});
+      setCapturesById({});
+      setInspectorName("");
+      setView({ type: "dashboard" });
+      setRetrieveError(null);
+      setExportError(null);
+      setClearDataDialogOpen(false);
+    } finally {
+      setIsClearingLocalData(false);
+    }
   }, []);
 
   const handleExportDaily = useCallback(async () => {
@@ -231,9 +262,38 @@ export default function Index() {
             isExporting={isExporting}
             retrieveError={retrieveError}
             exportError={exportError}
+            onRequestClearLocalData={() => setClearDataDialogOpen(true)}
           />
         )}
       </div>
+
+      <AlertDialog open={clearDataDialogOpen} onOpenChange={setClearDataDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Clear all local data?</AlertDialogTitle>
+            <AlertDialogDescription className="text-left space-y-2">
+              <span className="block">
+                This removes every inspection, review progress, captured photos, and cached scan data stored in
+                this browser on this device. It does not run automatically—you chose to clear.
+              </span>
+              <span className="block font-medium text-foreground">
+                Export today&apos;s pack first if you need a backup. This cannot be undone.
+              </span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isClearingLocalData}>Cancel</AlertDialogCancel>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={isClearingLocalData}
+              onClick={() => void handleConfirmClearLocalData()}
+            >
+              {isClearingLocalData ? "Clearing…" : "Yes, clear everything"}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <Dialog open={dailyPreviewOpen} onOpenChange={setDailyPreviewOpen}>
         <DialogContent className="max-w-[min(1100px,95vw)] w-full max-h-[min(720px,85vh)] flex flex-col p-0 gap-0 overflow-hidden">

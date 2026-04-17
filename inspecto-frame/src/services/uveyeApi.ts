@@ -1,3 +1,5 @@
+import { partNameMatches } from '@/lib/assistedInspectionModel';
+
 /**
  * UVeye Production API client.
  * Default key is embedded for internal deployments; override with `VITE_UVEYE_API_KEY` in `.env` if needed.
@@ -192,6 +194,7 @@ const IMAGE_URL_KEYS = [
   'croppedImage',
   'croppedWallImage',
   'treadImage',
+  'treadImageWithGrooves',
   'wallImage',
 ] as const;
 
@@ -226,6 +229,13 @@ export function pickDamageImageUrl(obj: Record<string, unknown>): string {
       if (t.startsWith('data:image/') && t.length > 32) return t;
       if (t.length > 4 && (t.startsWith('http') || t.startsWith('/') || t.startsWith('//'))) return t;
     }
+  }
+  const directImg = typeof obj.imageUrl === 'string' ? obj.imageUrl.trim() : '';
+  if (
+    directImg.length > 4 &&
+    (directImg.startsWith('http') || directImg.startsWith('/') || directImg.startsWith('//'))
+  ) {
+    return directImg;
   }
   return pickUrlFromRecord(obj);
 }
@@ -358,6 +368,60 @@ function rectangleToPinPercent(rect: unknown): { x: number; y: number } {
     x: Math.min(100, Math.max(0, (left + w / 2) * 100)),
     y: Math.min(100, Math.max(0, (top + h / 2) * 100)),
   };
+}
+
+/** Normalized polygon points [[x,y], …] in 0–1 image space → pin % (matches rectangle convention). */
+function polygonToPinPercent(poly: unknown): { x: number; y: number } {
+  if (!Array.isArray(poly) || poly.length === 0) return { x: 50, y: 50 };
+  let sx = 0;
+  let sy = 0;
+  let n = 0;
+  for (const pt of poly) {
+    if (!Array.isArray(pt) || pt.length < 2) continue;
+    const px = typeof pt[0] === 'number' ? pt[0] : 0;
+    const py = typeof pt[1] === 'number' ? pt[1] : 0;
+    sx += px;
+    sy += py;
+    n += 1;
+  }
+  if (n === 0) return { x: 50, y: 50 };
+  return {
+    x: Math.min(100, Math.max(0, (sx / n) * 100)),
+    y: Math.min(100, Math.max(0, (sy / n) * 100)),
+  };
+}
+
+/** UVeye sometimes omits groove polygons; spread pins across the tread-with-grooves image. */
+function grooveFallbackPinPercent(index: number, total: number): { x: number; y: number } {
+  if (total <= 1) return { x: 50, y: 50 };
+  const t = (index + 1) / (total + 1);
+  return {
+    x: Math.min(100, Math.max(0, t * 100)),
+    y: 52,
+  };
+}
+
+/** Remaining tread depth at or below 3/32" (legal wear threshold in many US contexts). */
+const TREAD_DEPTH_DAMAGE_MAX_MM = (3 / 32) * 25.4;
+
+function parseDepth32ndsFraction(depth32unknown: unknown): number | undefined {
+  if (typeof depth32unknown !== 'string') return undefined;
+  const m = depth32unknown.trim().match(/^(\d+)\s*\/\s*(\d+)/);
+  if (!m) return undefined;
+  const a = parseInt(m[1], 10);
+  const b = parseInt(m[2], 10);
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b === 0) return undefined;
+  return a / b;
+}
+
+function isLowTreadGrooveDamage(g: Record<string, unknown>): boolean {
+  const mm = typeof g.depthMm === 'number' ? g.depthMm : undefined;
+  if (mm !== undefined && Number.isFinite(mm)) {
+    return mm <= TREAD_DEPTH_DAMAGE_MAX_MM + 1e-6;
+  }
+  const frac = parseDepth32ndsFraction(g.depth32ndOfInch);
+  if (frac !== undefined) return frac <= 3 / 32 + 1e-9;
+  return false;
 }
 
 function humanizeDetectionType(raw: string): string {
@@ -511,49 +575,223 @@ function heliosDetectionsToAlerts(response: UveyeInspectionResponse): UveyeAlert
 }
 
 const ARTEMIS_CORNER_LABEL: Record<string, string> = {
-  leftFront: 'Left Front Wheel',
-  rightFront: 'Right Front Wheel',
-  leftRear: 'Left Rear Wheel',
-  rightRear: 'Right Rear Wheel',
+  leftFront: 'Left Front Tire',
+  rightFront: 'Right Front Tire',
+  leftRear: 'Left Rear Tire',
+  rightRear: 'Right Rear Tire',
 };
+
+/** Sidewall / rim / cosmetic — distinct from tread in the vehicle diagram. */
+const ARTEMIS_CORNER_TIRE_WALL_LABEL: Record<string, string> = {
+  leftFront: 'Left Front Tire Wall',
+  rightFront: 'Right Front Tire Wall',
+  leftRear: 'Left Rear Tire Wall',
+  rightRear: 'Right Rear Tire Wall',
+};
+
+const ARTEMIS_CORNER_ORDER = ['leftFront', 'rightFront', 'leftRear', 'rightRear'] as const;
+
+/** Fields that indicate this object is the real tire payload (UVeye may use `left_front` instead of `leftFront`). */
+const ARTEMIS_WHEEL_PAYLOAD_KEYS = [
+  'treadImage',
+  'wallImage',
+  'treadImageWithGrooves',
+  'grooves',
+  'wallDetections',
+  'treadDetections',
+] as const;
+
+/** Maps to `*-tire-wall` circles vs `*-tire-tread` paths in `sedan-unified.svg`. */
+type ArtemisDiagramSurface = 'wall' | 'tread';
+
+function artemisDetectionTextBlob(o: Record<string, unknown>): string {
+  const raw = String(o.type ?? '');
+  const title = pickDetectionDisplayName(o) || '';
+  const dn = typeof o.damageName === 'string' ? o.damageName : '';
+  return `${raw} ${title} ${dn}`.toLowerCase();
+}
+
+/**
+ * Classify a wall vs tread *finding* for diagram routing. `source` is the Artemis array the row came from.
+ * Wall: rim, sidewall, tire wall, bulges, tire cuts. Tread: depth, FOD, wear, grooves (handled separately).
+ */
+function resolveArtemisDiagramSurface(
+  source: 'wall' | 'tread',
+  o: Record<string, unknown>,
+): ArtemisDiagramSurface {
+  const blob = artemisDetectionTextBlob(o);
+
+  const treadSignals =
+    /\b(tread\s*(depth|wear)?|foreign|object|nail|screw|groove|penetration|debris|metal|stone|wear|low\s*tread)\b/i.test(
+      blob,
+    ) ||
+    /\b\d\s*\/\s*\d+\s*\/\s*32\b/i.test(blob) ||
+    /\b\d+\s*mm\b/i.test(blob);
+
+  const wallSignals =
+    /\b(rim|sidewall|tire\s*wall|wall|bulge|curb|bead|laceration|tire\s*cut|sidewall\s*cut)\b/i.test(blob) ||
+    (/\bcut\b/i.test(blob) && !/\btread\b/i.test(blob));
+
+  if (wallSignals && !treadSignals) return 'wall';
+  if (treadSignals && !wallSignals) return 'tread';
+  if (wallSignals && treadSignals) return source === 'wall' ? 'wall' : 'tread';
+  return source === 'wall' ? 'wall' : 'tread';
+}
+
+function artemisWheelObjectForCorner(
+  artemis: Record<string, unknown>,
+  corner: string,
+): Record<string, unknown> | null {
+  const snake = corner.replace(/([A-Z])/g, '_$1').toLowerCase();
+  const keys = snake === corner ? [corner] : [corner, snake];
+  const candidates: Record<string, unknown>[] = [];
+  for (const k of keys) {
+    const w = artemis[k];
+    if (w && typeof w === 'object' && !Array.isArray(w)) candidates.push(w as Record<string, unknown>);
+  }
+  if (candidates.length === 0) return null;
+  const rich = candidates.find((o) =>
+    ARTEMIS_WHEEL_PAYLOAD_KEYS.some((key) => {
+      const v = o[key];
+      if (typeof v === 'string') return v.trim().length > 0;
+      return Array.isArray(v) && v.length > 0;
+    }),
+  );
+  return rich ?? candidates[0];
+}
 
 function artemisTireAlerts(response: UveyeInspectionResponse): UveyeAlert[] {
   const root = response as Record<string, unknown>;
   const artemis = root.artemis;
   if (!artemis || typeof artemis !== 'object') return [];
+  const artemisRec = artemis as Record<string, unknown>;
   const out: UveyeAlert[] = [];
   let idx = 0;
-  for (const corner of Object.keys(ARTEMIS_CORNER_LABEL)) {
-    const wheel = (artemis as Record<string, unknown>)[corner];
-    if (!wheel || typeof wheel !== 'object') continue;
-    const w = wheel as Record<string, unknown>;
-    const part = ARTEMIS_CORNER_LABEL[corner] ?? corner;
-    const lists: unknown[] = [];
-    if (Array.isArray(w.wallDetections)) lists.push(...w.wallDetections);
-    if (Array.isArray(w.treadDetections)) lists.push(...w.treadDetections);
-    for (const det of lists) {
-      if (!det || typeof det !== 'object') continue;
-      const o = det as Record<string, unknown>;
-      const url =
-        (typeof o.croppedImage === 'string' && o.croppedImage.trim()) ||
-        (typeof o.croppedWallImage === 'string' && o.croppedWallImage.trim()) ||
-        (typeof o.croppedTreadImage === 'string' && o.croppedTreadImage.trim()) ||
-        '';
-      if (!url) continue;
-      const { x, y } = rectangleToPinPercent(o.rectangle);
-      const high = o.isHighSeverity === true;
-      const med = o.isMediumSeverity === true;
-      const damageName = pickDetectionDisplayName(o);
-      out.push({
-        id: String(o.id ?? `tire_${corner}_${idx}`),
-        part,
-        type: humanizeDetectionType(String(o.type ?? 'Tire damage')),
-        severity: high ? 'High' : med ? 'Medium' : 'Low',
-        imageUrl: url,
-        location: { x, y },
-        damageName: damageName || undefined,
-      });
-      idx += 1;
+  for (const corner of ARTEMIS_CORNER_ORDER) {
+    const wheel = artemisWheelObjectForCorner(artemisRec, corner);
+    if (!wheel) continue;
+    const w = wheel;
+    const partWheel = ARTEMIS_CORNER_LABEL[corner] ?? corner;
+    const partWall = ARTEMIS_CORNER_TIRE_WALL_LABEL[corner] ?? corner;
+    const wallBase =
+      typeof w.wallImage === 'string' ? w.wallImage.trim() : '';
+    const treadBase =
+      typeof w.treadImage === 'string' ? w.treadImage.trim() : '';
+    const treadWithGrooves =
+      typeof w.treadImageWithGrooves === 'string'
+        ? w.treadImageWithGrooves.trim()
+        : '';
+    const treadGrooveViewUrl = treadWithGrooves || treadBase;
+
+    /** Sidewall / rim: only `wallDetections` — coordinates are on the wall image. */
+    if (Array.isArray(w.wallDetections)) {
+      for (const det of w.wallDetections) {
+        if (!det || typeof det !== 'object') continue;
+        const o = det as Record<string, unknown>;
+        const url =
+          (typeof o.croppedImage === 'string' && o.croppedImage.trim()) ||
+          (typeof o.croppedWallImage === 'string' && o.croppedWallImage.trim()) ||
+          wallBase ||
+          '';
+        if (!url) continue;
+        const { x, y } = rectangleToPinPercent(o.rectangle);
+        const high = o.isHighSeverity === true;
+        const med = o.isMediumSeverity === true;
+        const surface = resolveArtemisDiagramSurface('wall', o);
+        const part = surface === 'wall' ? partWall : partWheel;
+        const humanType = humanizeDetectionType(String(o.type ?? 'Tire damage'));
+        const rawTitle = pickDetectionDisplayName(o);
+        const label = rawTitle || humanType;
+        const typeStr =
+          surface === 'wall' ? `Tire sidewall — ${humanType}` : `Tire tread — ${humanType}`;
+        const damageName =
+          surface === 'wall' ? `Sidewall: ${label}` : `Tread: ${label}`;
+        out.push({
+          id: String(o.id ?? `tire_wall_${corner}_${idx}`),
+          part,
+          type: typeStr,
+          severity: high ? 'High' : med ? 'Medium' : 'Low',
+          imageUrl: url,
+          location: { x, y },
+          damageName,
+        });
+        idx += 1;
+      }
+    }
+
+    /** Tread surface: foreign objects / tread-only detections — coordinates on tread image. */
+    if (Array.isArray(w.treadDetections)) {
+      for (const det of w.treadDetections) {
+        if (!det || typeof det !== 'object') continue;
+        const o = det as Record<string, unknown>;
+        const url =
+          (typeof o.croppedImage === 'string' && o.croppedImage.trim()) ||
+          (typeof o.croppedTreadImage === 'string' && o.croppedTreadImage.trim()) ||
+          treadBase ||
+          '';
+        if (!url) continue;
+        const { x, y } = rectangleToPinPercent(o.rectangle);
+        const high = o.isHighSeverity === true;
+        const med = o.isMediumSeverity === true;
+        const surface = resolveArtemisDiagramSurface('tread', o);
+        const part = surface === 'wall' ? partWall : partWheel;
+        const humanType = humanizeDetectionType(String(o.type ?? 'Tire damage'));
+        const rawTitle = pickDetectionDisplayName(o);
+        const label = rawTitle || humanType;
+        const typeStr =
+          surface === 'wall' ? `Tire sidewall — ${humanType}` : `Tire tread — ${humanType}`;
+        const damageName =
+          surface === 'wall' ? `Sidewall: ${label}` : `Tread: ${label}`;
+        out.push({
+          id: String(o.id ?? `tire_tread_${corner}_${idx}`),
+          part,
+          type: typeStr,
+          severity: high ? 'High' : med ? 'Medium' : 'Low',
+          imageUrl: url,
+          location: { x, y },
+          damageName,
+        });
+        idx += 1;
+      }
+    }
+
+    /** Synthetic tread-wear damages from groove depth (remaining depth ≤ 3/32"). Pins use polygon centroids, or a spread layout when `polygon` is empty. */
+    const grooves = w.grooves;
+    if (Array.isArray(grooves) && treadGrooveViewUrl) {
+      const lowGrooves: { origIdx: number; rec: Record<string, unknown> }[] = [];
+      for (let gi = 0; gi < grooves.length; gi++) {
+        const g = grooves[gi];
+        if (!g || typeof g !== 'object') continue;
+        const gr = g as Record<string, unknown>;
+        if (isLowTreadGrooveDamage(gr)) lowGrooves.push({ origIdx: gi, rec: gr });
+      }
+      const nLow = lowGrooves.length;
+      for (let j = 0; j < nLow; j++) {
+        const { origIdx, rec: gr } = lowGrooves[j];
+        const poly = gr.polygon;
+        let pin = polygonToPinPercent(poly);
+        if (!Array.isArray(poly) || poly.length === 0) {
+          pin = grooveFallbackPinPercent(j, nLow);
+        }
+        const depthLabel =
+          typeof gr.depth32ndOfInch === 'string'
+            ? gr.depth32ndOfInch.trim()
+            : typeof gr.depthMm === 'number'
+              ? `${gr.depthMm.toFixed(1)} mm`
+              : 'low';
+        const high = gr.isCritical === true;
+        const med = gr.isMarginal === true && !high;
+        out.push({
+          id: `groove_${corner}_${origIdx}`,
+          part: partWheel,
+          type: 'Tire tread — Low tread depth',
+          severity: high ? 'High' : med ? 'Medium' : 'Low',
+          imageUrl: treadGrooveViewUrl,
+          location: { x: pin.x, y: pin.y },
+          damageName: `Tread: low depth (${depthLabel} — at or below 3/32")`,
+        });
+        idx += 1;
+      }
     }
   }
   return out;
@@ -753,6 +991,24 @@ export function buildCameraFramesFromResponse(response: UveyeInspectionResponse)
     frameImages[id] = u;
   };
 
+  /** Register tire close-ups early so `findFrameIdForAlert` resolves tread / wall / groove-overlay URLs reliably. */
+  const artemisRoot = (response as Record<string, unknown>).artemis;
+  if (artemisRoot && typeof artemisRoot === 'object') {
+    const artemisRec = artemisRoot as Record<string, unknown>;
+    for (const corner of ARTEMIS_CORNER_ORDER) {
+      const wheel = artemisWheelObjectForCorner(artemisRec, corner);
+      if (!wheel) continue;
+      const w = wheel;
+      const treadG =
+        typeof w.treadImageWithGrooves === 'string' ? w.treadImageWithGrooves.trim() : '';
+      const tread = typeof w.treadImage === 'string' ? w.treadImage.trim() : '';
+      const wall = typeof w.wallImage === 'string' ? w.wallImage.trim() : '';
+      if (treadG) add(treadG, `artemis_${corner}_treadGrooves`, 1);
+      if (tread) add(tread, `artemis_${corner}_tread`, 1);
+      if (wall) add(wall, `artemis_${corner}_wall`, 1);
+    }
+  }
+
   for (const arr of collectImageObjectArrays(response)) {
     for (const item of arr) {
       if (!item || typeof item !== 'object') continue;
@@ -858,18 +1114,23 @@ export function resolveDamageAtlasPortalUrl(
 }
 
 /**
- * Re-attach `portalUrl` / Atlas fields from a fresh `mapUveyeAlertsToDamages` pass onto persisted rows
- * (saved damages keep review flags but may omit or stale-link portal fields).
+ * Re-attach viewport + portal fields from a fresh `mapUveyeAlertsToDamages` pass onto persisted rows.
+ * Saved rows keep review flags (`confirmed`, `isDuplicate`, `flagged`) but `frameId` / pin position must
+ * follow the fresh mapping so `getFramesForPart` still resolves after re-fetch or frame-list reordering.
  */
 export function mergePersistedDamagesWithFreshMap<
   T extends {
     part: string;
     frameId: string;
+    type: string;
+    severity: string;
     reportId?: string;
     damageName?: string;
     portalUrl?: string;
     atlasCameraId?: string;
     atlasFrameIndex?: number;
+    x?: number;
+    y?: number;
   },
 >(saved: T[], fresh: UveyeMappedDamage[]): T[] {
   const pool = [...fresh];
@@ -881,9 +1142,19 @@ export function mergePersistedDamagesWithFreshMap<
     if (idx < 0) {
       idx = pool.findIndex(
         (x) =>
-          x.part === d.part &&
+          partNameMatches(x.part, d.part) &&
           x.frameId === d.frameId &&
           (x.damageName || '') === (d.damageName || ''),
+      );
+    }
+    /** Stale `frameId` from an older payload breaks image lookup; fall back to part + labels. */
+    if (idx < 0) {
+      idx = pool.findIndex(
+        (x) =>
+          partNameMatches(x.part, d.part) &&
+          (x.damageName || '') === (d.damageName || '') &&
+          x.type === d.type &&
+          x.severity === d.severity,
       );
     }
     if (idx < 0) return d;
@@ -891,6 +1162,14 @@ export function mergePersistedDamagesWithFreshMap<
     pool.splice(idx, 1);
     return {
       ...d,
+      /** Fresh mapping is source of truth so diagram highlights match the correct wheel after API / mapping fixes. */
+      part: m.part,
+      type: m.type,
+      severity: m.severity,
+      damageName: m.damageName ?? d.damageName,
+      frameId: m.frameId,
+      x: m.x,
+      y: m.y,
       portalUrl: m.portalUrl ?? d.portalUrl,
       atlasCameraId: m.atlasCameraId ?? d.atlasCameraId,
       atlasFrameIndex: m.atlasFrameIndex ?? d.atlasFrameIndex,
@@ -917,7 +1196,10 @@ function findFrameIdForAlert(
   urlToFrameId: Map<string, string>,
 ): string | undefined {
   const rec = alert as Record<string, unknown>;
-  const url = pickDamageImageUrl(rec);
+  const url =
+    pickDamageImageUrl(rec) ||
+    (typeof rec.imageUrl === 'string' && rec.imageUrl.trim()) ||
+    '';
   if (url) {
     if (urlToFrameId.has(url)) return urlToFrameId.get(url);
     const n = normalizeUrlKey(url);

@@ -1,6 +1,4 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
-import carSketchImg from '@/assets/car-sketch.png';
-import truckSketchImg from '@/assets/truck-sketch.png';
 import type { BodyType } from './InspectionDashboard';
 import CameraCapture from './CameraCapture';
 import type { CapturedPhotoEntry } from '@/types/capturedPhoto';
@@ -16,9 +14,22 @@ import {
   type UveyeCameraFrame,
 } from '@/services/uveyeApi';
 import InspectionViewportImage from '@/components/InspectionViewportImage';
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { cn } from '@/lib/utils';
+import {
+  AREAS,
+  ALL_AREAS,
+  CAR_PARTS,
+  partNameMatches,
+  type Area,
+  type CarPart,
+  type Damage,
+} from '@/lib/assistedInspectionModel';
+import { SEDAN_LAYOUT_BASE_PX } from '@/lib/sedanDiagramCalibration';
+import { SedanUnifiedDiagram } from '@/components/SedanUnifiedDiagram';
+import interiorDamagesSketchSvg from '@/assets/interior-damages-sketch.svg?raw';
+import undercarriageSketchSvg from '@/assets/undercarriage-sketch.svg?raw';
 import {
   AlertTriangle,
   ChevronLeft,
@@ -42,99 +53,28 @@ import {
   Image as ImageIcon,
   CheckCircle,
   XCircle,
+  Truck,
 } from 'lucide-react';
 
-/* ──────────────────────────────────────────────
-   Data model
-   ────────────────────────────────────────────── */
+/** Same corner slugs as `buildCameraFramesFromResponse` (`artemis_leftFront_tread`, …). */
+const PART_NAME_TO_ARTEMIS_CORNER: Partial<Record<string, string>> = {
+  'Left Front Tire': 'leftFront',
+  'Left Front Tire Wall': 'leftFront',
+  'Right Front Tire': 'rightFront',
+  'Right Front Tire Wall': 'rightFront',
+  'Left Rear Tire': 'leftRear',
+  'Left Rear Tire Wall': 'leftRear',
+  'Right Rear Tire': 'rightRear',
+  'Right Rear Tire Wall': 'rightRear',
+};
 
-type Area = 'Front' | 'Left' | 'Top' | 'Right' | 'Rear' | 'Undercarriage' | 'Interior';
-
-interface CarPart {
-  name: string;
-  area: Area;
-  cameras: string[];      // all cameras that can see this part
-  bestCamera: string;     // single best camera for this part
-  bestFrameNum: number;   // best frame number within that camera
+function artemisCornerForPartName(partName: string): string | undefined {
+  return PART_NAME_TO_ARTEMIS_CORNER[partName];
 }
 
-interface Damage {
-  id: number;
-  part: string;
-  type: string;
-  severity: string;
-  ai: boolean;
-  x: number;
-  y: number;
-  frameId: string;
-  confirmed?: boolean | null;
-  /** UVeye web app deep link for this frame (Atlas). */
-  portalUrl?: string;
-  /** From API mapping — used to rebuild Atlas URL after local persist. */
-  atlasCameraId?: string;
-  atlasFrameIndex?: number;
-  /** Same physical damage seen from another angle / duplicate finding */
-  isDuplicate?: boolean;
-  /** Mark for follow-up (ops / QA), independent of approve or reject */
-  flagged?: boolean;
-  /** `name` / `damageName` / `displayName` from detection object when present */
-  damageName?: string;
-  /** API detection id when available */
-  reportId?: string;
-}
-
-const CAR_PARTS: CarPart[] = [
-  // Front area
-  { name: 'Front Bumper',       area: 'Front', cameras: [], bestCamera: '', bestFrameNum: 0 },
-  { name: 'Hood',               area: 'Front', cameras: [], bestCamera: '', bestFrameNum: 0 },
-  { name: 'Grille',             area: 'Front', cameras: [], bestCamera: '', bestFrameNum: 0 },
-  { name: 'Headlights',         area: 'Front', cameras: [], bestCamera: '', bestFrameNum: 0 },
-  { name: 'Left Front Wheel',   area: 'Front', cameras: [], bestCamera: '', bestFrameNum: 0 },
-  
-  // Left area
-  { name: 'Left Fender',        area: 'Left',  cameras: [], bestCamera: '', bestFrameNum: 0 },
-  { name: 'Left Front Door',    area: 'Left',  cameras: [], bestCamera: '', bestFrameNum: 0 },
-  { name: 'Left Rear Door',     area: 'Left',  cameras: [], bestCamera: '', bestFrameNum: 0 },
-  { name: 'Left Quarter Panel', area: 'Left',  cameras: [], bestCamera: '', bestFrameNum: 0 },
-  { name: 'Left Mirror',        area: 'Left',  cameras: [], bestCamera: '', bestFrameNum: 0 },
-  { name: 'Left Window',        area: 'Left',  cameras: [], bestCamera: '', bestFrameNum: 0 },
-  { name: 'Left Bed Side',      area: 'Left',  cameras: [], bestCamera: '', bestFrameNum: 0 },
-  { name: 'Left Rocker',        area: 'Left',  cameras: [], bestCamera: '', bestFrameNum: 0 },
-  { name: 'Left Rear Wheel',    area: 'Left',  cameras: [], bestCamera: '', bestFrameNum: 0 },
-  // Top area
-  { name: 'Windshield',         area: 'Top',   cameras: [], bestCamera: '', bestFrameNum: 0 },
-  { name: 'Roof',               area: 'Top',   cameras: [], bestCamera: '', bestFrameNum: 0 },
-  { name: 'Rear Window',        area: 'Top',   cameras: [], bestCamera: '', bestFrameNum: 0 },
-  { name: 'Left Drip Rail',     area: 'Top',   cameras: [], bestCamera: '', bestFrameNum: 0 },
-  { name: 'Right Drip Rail',    area: 'Top',   cameras: [], bestCamera: '', bestFrameNum: 0 },
-  // Right area
-  { name: 'Right Fender',       area: 'Right', cameras: [], bestCamera: '', bestFrameNum: 0 },
-  { name: 'Right Front Door',   area: 'Right', cameras: [], bestCamera: '', bestFrameNum: 0 },
-  { name: 'Right Rear Door',    area: 'Right', cameras: [], bestCamera: '', bestFrameNum: 0 },
-  { name: 'Right Quarter Panel',area: 'Right', cameras: [], bestCamera: '', bestFrameNum: 0 },
-  { name: 'Right Mirror',       area: 'Right', cameras: [], bestCamera: '', bestFrameNum: 0 },
-  { name: 'Right Window',       area: 'Right', cameras: [], bestCamera: '', bestFrameNum: 0 },
-  { name: 'Right Bed Side',     area: 'Right', cameras: [], bestCamera: '', bestFrameNum: 0 },
-  { name: 'Right Rocker',       area: 'Right', cameras: [], bestCamera: '', bestFrameNum: 0 },
-  { name: 'Right Front Wheel',  area: 'Right', cameras: [], bestCamera: '', bestFrameNum: 0 },
-  { name: 'Right Rear Wheel',   area: 'Right', cameras: [], bestCamera: '', bestFrameNum: 0 },
-  // Rear area
-  { name: 'Trunk/Liftgate',     area: 'Rear',  cameras: [], bestCamera: '', bestFrameNum: 0 },
-  { name: 'Tailgate',           area: 'Rear',  cameras: [], bestCamera: '', bestFrameNum: 0 },
-  { name: 'Rear Bumper',        area: 'Rear',  cameras: [], bestCamera: '', bestFrameNum: 0 },
-  { name: 'Taillights',         area: 'Rear',  cameras: [], bestCamera: '', bestFrameNum: 0 },
-  { name: 'Bed/Cargo',          area: 'Rear',  cameras: [], bestCamera: '', bestFrameNum: 0 },
-  // Undercarriage
-  { name: 'Undercarriage',        area: 'Undercarriage', cameras: [], bestCamera: '', bestFrameNum: 0 },
-  // Interior (placeholder — future Apollo / interior scans map here like other parts)
-  { name: 'Interior',             area: 'Interior',      cameras: [], bestCamera: '', bestFrameNum: 0 },
-];
-
-const AREAS: Area[] = ['Front', 'Left', 'Top', 'Right', 'Rear'];
-const ALL_AREAS: Area[] = ['Front', 'Left', 'Top', 'Right', 'Rear', 'Undercarriage', 'Interior'];
-
-function partNameMatches(uiPart: string, apiPart: string): boolean {
-  return uiPart.trim().toLowerCase() === apiPart.trim().toLowerCase();
+function framesForArtemisCorner(allFrames: UveyeCameraFrame[], corner: string): UveyeCameraFrame[] {
+  const needle = `artemis_${corner}_`;
+  return allFrames.filter((f) => typeof f.camera === 'string' && f.camera.includes(needle));
 }
 
 function getFramesForPart(
@@ -142,13 +82,25 @@ function getFramesForPart(
   allFrames: UveyeCameraFrame[],
   damages: Damage[],
 ): UveyeCameraFrame[] {
+  const artemisCorner = artemisCornerForPartName(part.name);
   const partDmgs = damages.filter(d => partNameMatches(part.name, d.part));
   const frameIds = new Set(partDmgs.map(d => d.frameId));
   if (frameIds.size > 0) {
-    return allFrames.filter(f => frameIds.has(f.id));
+    const matched = allFrames.filter(f => frameIds.has(f.id));
+    /** Stale persisted frameIds or API reordering can yield no rows — fall back so tread/wall images still load. */
+    if (matched.length > 0) return matched;
+    /** Tire parts: never fall back to every frame — only this corner's Artemis close-ups. */
+    if (artemisCorner) {
+      const cornerFrames = framesForArtemisCorner(allFrames, artemisCorner);
+      return cornerFrames.length > 0 ? cornerFrames : [];
+    }
   }
   // No detections yet: interior uses Apollo later — do not fall back to all exterior frames
   if (part.area === 'Interior') {
+    return [];
+  }
+  /** Tires / tire walls: no UVeye detections for this corner — do not show all four Artemis corners + exterior. */
+  if (artemisCorner) {
     return [];
   }
   return allFrames;
@@ -170,6 +122,38 @@ interface AssistedInspectionV3Props {
   onPersistReviewState?: (state: Record<string, unknown>) => void;
   onCapturedPhotosChange?: (photos: CapturedPhotoEntry[]) => void;
 }
+
+/**
+ * Append `?diagramTest=1` to the URL to inject sample map highlights:
+ * — Left front: tire *cut* → `Left Front Tire Wall` only (`*-tire-wall` circle).
+ * — Right front: foreign object → `Right Front Tire` only (`*-tire-tread` path).
+ */
+const DIAGRAM_TEST_DAMAGES: Damage[] = [
+  { id: -91001, part: 'Hood', type: 'diagram-test', severity: 'Low', ai: false, x: 0, y: 0, frameId: '__diagram_test__' },
+  { id: -91002, part: 'Left Quarter Panel', type: 'diagram-test', severity: 'Low', ai: false, x: 0, y: 0, frameId: '__diagram_test__' },
+  {
+    id: -91003,
+    part: 'Left Front Tire Wall',
+    type: 'Tire sidewall — Tire Cut',
+    severity: 'Low',
+    ai: false,
+    x: 0,
+    y: 0,
+    frameId: '__diagram_test__',
+    damageName: 'Sidewall: Tire Cut',
+  },
+  {
+    id: -91004,
+    part: 'Right Front Tire',
+    type: 'Tire tread — Foreign Object',
+    severity: 'Low',
+    ai: false,
+    x: 0,
+    y: 0,
+    frameId: '__diagram_test__',
+    damageName: 'Tread: Foreign object (nail)',
+  },
+];
 
 export default function AssistedInspectionV3({
   payload,
@@ -196,10 +180,8 @@ export default function AssistedInspectionV3({
   const [viewportZoom, setViewportZoom] = useState(1);
   const isMobile = useIsMobile();
 
-  /** Vehicle map panel: hide diagram so the parts list scroll area gets more room (default collapsed on small screens). */
-  const [mapDiagramCollapsed, setMapDiagramCollapsed] = useState(
-    () => typeof window !== 'undefined' && window.innerWidth < 768,
-  );
+  /** Vehicle map panel: keep the top-down diagram visible by default (mobile users otherwise saw only the parts list). */
+  const [mapDiagramCollapsed, setMapDiagramCollapsed] = useState(false);
 
   /** When false on mobile, part title + damage strip collapse to a thin bar so the image fills the screen. */
   const [partDetailExpanded, setPartDetailExpanded] = useState(
@@ -269,6 +251,12 @@ export default function AssistedInspectionV3({
   useEffect(() => {
     onCapturedPhotosChange?.(capturedPhotos);
   }, [capturedPhotos, onCapturedPhotosChange]);
+
+  const damagesWithDiagramTest = useMemo(() => {
+    if (typeof window === 'undefined') return damages;
+    if (new URLSearchParams(window.location.search).get('diagramTest') !== '1') return damages;
+    return [...damages.filter((d) => d.frameId !== '__diagram_test__'), ...DIAGRAM_TEST_DAMAGES];
+  }, [damages]);
 
   const allParts = [...CAR_PARTS, ...customParts];
   const partNames = useMemo(() => allParts.map((p) => p.name), [allParts]);
@@ -474,17 +462,14 @@ export default function AssistedInspectionV3({
             <div className="flex justify-center">
               <MiniCarDiagram
                 activePart={activePart}
-                reviewedParts={reviewedParts}
-                damages={damages}
-                onSelectPart={selectPart}
+                damages={damagesWithDiagramTest}
                 vehicleType={vehicleType}
-                onDoubleClickPart={(partName) => {
-                  setReviewedParts((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(partName)) next.delete(partName);
-                    else next.add(partName);
-                    return next;
-                  });
+                onSelectPartByName={(name) => {
+                  const part = allParts.find((p) => p.name === name);
+                  if (part) {
+                    setExpandedArea(part.area);
+                    selectPart(part);
+                  }
                 }}
               />
             </div>
@@ -1248,8 +1233,8 @@ export default function AssistedInspectionV3({
             </>
           ) : (
             /* Empty state when no part selected */
-            <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground px-6 sm:px-8">
-              <div className="w-16 h-16 rounded-2xl bg-muted flex items-center justify-center mb-4">
+            <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground px-4 sm:px-8 min-h-0 overflow-y-auto overscroll-contain py-4">
+              <div className="w-16 h-16 rounded-2xl bg-muted flex items-center justify-center mb-4 shrink-0">
                 <AlertTriangle size={28} className="opacity-30" />
               </div>
               <h2 className="text-lg sm:text-xl font-bold text-foreground mb-2 text-center px-2">
@@ -1257,16 +1242,29 @@ export default function AssistedInspectionV3({
               </h2>
               <p className="text-sm text-center max-w-xs">
                 <span className="hidden md:inline">
-                  Pick a part from the vehicle diagram or the list on the right.
+                  Pick a part from the list on the right.
                 </span>
                 <span className="md:hidden">
-                  Tap <strong className="text-foreground">Map</strong> in the header to open the vehicle diagram and parts list.
+                  Use the map below or tap <strong className="text-foreground">Map</strong> for the full parts list.
                 </span>
               </p>
+              {isMobile && (
+                <div className="mt-4 w-full max-w-[min(100%,280px)] shrink-0 flex flex-col items-center">
+                  <MiniCarDiagram
+                    activePart={activePart}
+                    damages={damagesWithDiagramTest}
+                    vehicleType={vehicleType}
+                    onSelectPartByName={(name) => {
+                      const part = allParts.find((p) => p.name === name);
+                      if (part) selectPart(part);
+                    }}
+                  />
+                </div>
+              )}
               <button
                 type="button"
                 onClick={() => setSidebarOpen(true)}
-                className="md:hidden mt-5 inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-primary text-primary-foreground text-sm font-semibold shadow-sm active:scale-[0.98] transition-transform"
+                className="md:hidden mt-5 inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-primary text-primary-foreground text-sm font-semibold shadow-sm active:scale-[0.98] transition-transform shrink-0"
               >
                 <LayoutGrid size={18} />
                 Open vehicle map
@@ -1284,6 +1282,9 @@ export default function AssistedInspectionV3({
             >
               <SheetHeader className="px-4 py-3 border-b border-border shrink-0 space-y-0 text-left">
                 <SheetTitle className="text-base pr-8">Vehicle map & parts</SheetTitle>
+                <SheetDescription className="sr-only">
+                  Browse areas and parts, or open the vehicle diagram to select a panel.
+                </SheetDescription>
               </SheetHeader>
               <div className="flex flex-1 flex-col min-h-0 overflow-hidden bg-card">{renderVehicleMapSidebar()}</div>
             </SheetContent>
@@ -1305,61 +1306,43 @@ export default function AssistedInspectionV3({
 }
 
 /* ──────────────────────────────────────────────
-   Mini Car Diagram — clickable parts on a top-down SVG
+   Mini Car Diagram — click a panel to jump to that part’s damages (same as parts list)
    ────────────────────────────────────────────── */
+
+/** Same pixel space as `sedan-unified.svg` / `SEDAN_LAYOUT_BASE_PX`. */
+const SEDAN_LAYOUT_VIEWBOX = { w: SEDAN_LAYOUT_BASE_PX.w, h: SEDAN_LAYOUT_BASE_PX.h } as const;
+
+/** Match `interior-damages-sketch.svg` / `undercarriage-sketch.svg` viewBoxes. */
+const INTERIOR_SKETCH_VIEWBOX = { w: 197, h: 252 } as const;
+const UNDERCARRIAGE_SKETCH_VIEWBOX = { w: 126, h: 288 } as const;
 
 function MiniCarDiagram({
   activePart,
-  reviewedParts,
   damages,
-  onSelectPart,
-  onDoubleClickPart,
   vehicleType = 'sedan',
+  onSelectPartByName,
 }: {
   activePart: CarPart | null;
-  reviewedParts: Set<string>;
   damages: Damage[];
-  onSelectPart: (part: CarPart) => void;
-  onDoubleClickPart: (partName: string) => void;
   vehicleType?: BodyType;
+  onSelectPartByName?: (partName: string) => void;
 }) {
   /** Top-down exterior sketch vs placeholder interior vs undercarriage schematic */
   const [diagramSurface, setDiagramSurface] = React.useState<'exterior' | 'interior' | 'undercarriage'>(
     'exterior',
   );
 
-  const handlePartClick = (partName: string) => {
-    const part = [...CAR_PARTS].find(p => p.name === partName);
-    if (!part) return;
-    onSelectPart(part);
-  };
+  const isSedanVehicle = String(vehicleType ?? '').toLowerCase() === 'sedan';
 
-  const handlePartDoubleClick = (partName: string, e: React.MouseEvent<SVGElement>) => {
-    e.preventDefault();
-    onDoubleClickPart(partName);
-  };
-
+  /** Interior / undercarriage sketches — sedan exterior uses `sedan-unified.svg` + path ids. */
   const partProps = (partName: string) => {
     const isActive = activePart?.name === partName;
-    const hasDamage = damages.some(d => partNameMatches(partName, d.part));
-
     let fill = 'transparent';
     let stroke = 'transparent';
     let strokeWidth = 0;
     const opacity = 1;
 
-    if (hasDamage && isActive) {
-      // Active + damaged: solid red with blue outline
-      fill = 'hsl(0 75% 50% / 0.55)';
-      stroke = 'hsl(var(--primary))';
-      strokeWidth = 2.5;
-    } else if (hasDamage) {
-      // Damaged: solid red fill like reference images
-      fill = 'hsl(0 75% 50% / 0.45)';
-      stroke = 'hsl(0 75% 45% / 0.7)';
-      strokeWidth = 1.5;
-    } else if (isActive) {
-      // Active but no damage: subtle blue outline only
+    if (isActive) {
       fill = 'hsl(var(--primary) / 0.12)';
       stroke = 'hsl(var(--primary))';
       strokeWidth = 2;
@@ -1370,9 +1353,6 @@ function MiniCarDiagram({
       stroke,
       strokeWidth,
       opacity,
-      onClick: () => handlePartClick(partName),
-      onDoubleClick: (e: React.MouseEvent<SVGElement>) => handlePartDoubleClick(partName, e),
-      className: 'cursor-pointer hover:opacity-80 transition-all',
     };
   };
 
@@ -1394,7 +1374,7 @@ function MiniCarDiagram({
               key === 'undercarriage'
                 ? 'Undercarriage view'
                 : key === 'interior'
-                  ? 'Interior (placeholder)'
+                  ? 'Interior view'
                   : 'Exterior walk-around'
             }
             className={cn(
@@ -1409,155 +1389,90 @@ function MiniCarDiagram({
         ))}
       </div>
 
-      <div className="relative" style={{ width: 220, height: 293 }}>
+      <div
+        className={cn(
+          'relative',
+          diagramSurface === 'exterior' && isSedanVehicle && 'shrink-0',
+        )}
+        style={
+          diagramSurface === 'exterior' && isSedanVehicle
+            ? { width: 220, aspectRatio: `${SEDAN_LAYOUT_VIEWBOX.w} / ${SEDAN_LAYOUT_VIEWBOX.h}` }
+            : diagramSurface === 'interior'
+              ? { width: 220, aspectRatio: `${INTERIOR_SKETCH_VIEWBOX.w} / ${INTERIOR_SKETCH_VIEWBOX.h}` }
+              : diagramSurface === 'undercarriage'
+                ? { width: 220, aspectRatio: `${UNDERCARRIAGE_SKETCH_VIEWBOX.w} / ${UNDERCARRIAGE_SKETCH_VIEWBOX.h}` }
+                : { width: 220, height: 293 }
+        }
+      >
         {diagramSurface === 'undercarriage' ? (
-          <svg viewBox="0 0 704 936" className="w-full h-full" fill="none">
-            <rect x="220" y="180" width="265" height="580" rx="30" fill="hsl(var(--muted) / 0.15)" stroke="hsl(var(--border))" strokeWidth={1.5} strokeDasharray="6 3" />
-            <rect x="230" y="190" width="245" height="560" rx="24" {...partProps('Undercarriage')} />
-            <text x="352" y="470" textAnchor="middle" fontSize="22" fill="hsl(var(--muted-foreground))" className="pointer-events-none">Undercarriage</text>
-          </svg>
-        ) : diagramSurface === 'interior' ? (
-          <svg viewBox="0 0 704 936" className="w-full h-full" fill="none">
-            <rect x="200" y="200" width="304" height="520" rx="36" fill="hsl(var(--muted) / 0.12)" stroke="hsl(var(--border))" strokeWidth={1.5} strokeDasharray="8 4" />
-            <rect x="230" y="240" width="246" height="380" rx="28" fill="hsl(var(--muted) / 0.08)" stroke="hsl(var(--border))" strokeWidth={1.2} />
-            <rect x="280" y="360" width="146" height="90" rx="12" fill="hsl(var(--muted) / 0.15)" {...partProps('Interior')} />
-            <text x="352" y="330" textAnchor="middle" fontSize="20" fill="hsl(var(--muted-foreground))" className="pointer-events-none">
-              Interior
-            </text>
-            <text x="352" y="360" textAnchor="middle" fontSize="13" fill="hsl(var(--muted-foreground) / 0.85)" className="pointer-events-none">
-              Placeholder
-            </text>
-          </svg>
-        ) : (
-          <>
-            <img src={vehicleType === 'truck' ? truckSketchImg : carSketchImg} alt="Vehicle diagram" className="w-full h-full object-contain pointer-events-none select-none" draggable={false} />
-            <svg viewBox="0 0 704 936" className="absolute inset-0 w-full h-full" fill="none">
-              {vehicleType === 'truck' ? (
-                <>
-                  {/* ── TRUCK LAYOUT ── */}
-
-                  {/* ── Front view (top center) ── */}
-                  <path d="M255 15 L450 15 L465 55 L475 95 L485 145 L220 145 L230 95 L240 55 Z" {...partProps('Front Bumper')} />
-                  <path d="M265 20 L440 20 L448 50 L260 50 Z" {...partProps('Grille')} />
-                  <rect x="265" y="95" width="40" height="28" rx="10" {...partProps('Headlights')} />
-                  <rect x="400" y="95" width="40" height="28" rx="10" {...partProps('Headlights')} />
-
-                  {/* ── Top-down view (center) ── */}
-                  {/* Hood */}
-                  <path d="M258 190 Q352 175 448 190 L445 270 Q352 258 260 270 Z" {...partProps('Hood')} />
-                  {/* Windshield */}
-                  <path d="M260 272 Q352 258 445 272 L435 325 Q352 315 270 325 Z" {...partProps('Windshield')} />
-                  {/* Left Mirror */}
-                  <ellipse cx="218" cy="295" rx="12" ry="18" {...partProps('Left Mirror')} />
-                  {/* Right Mirror */}
-                  <ellipse cx="488" cy="295" rx="12" ry="18" {...partProps('Right Mirror')} />
-                  {/* Roof / Cab */}
-                  <path d="M270 327 Q352 317 435 327 L435 440 Q352 450 270 440 Z" {...partProps('Roof')} />
-                  {/* Left Front Door (top-down) */}
-                  <path d="M226 295 L268 295 L268 395 L224 395 Z" {...partProps('Left Front Door')} />
-                  {/* Left Rear Door (top-down) */}
-                  <path d="M224 397 L268 397 L268 460 L228 460 Z" {...partProps('Left Rear Door')} />
-                  {/* Right Front Door (top-down) */}
-                  <path d="M438 295 L480 295 L482 395 L438 395 Z" {...partProps('Right Front Door')} />
-                  {/* Right Rear Door (top-down) */}
-                  <path d="M438 397 L480 397 L478 460 L438 460 Z" {...partProps('Right Rear Door')} />
-                  {/* Rear Window */}
-                  <path d="M270 442 Q352 452 435 442 L440 475 Q352 487 265 475 Z" {...partProps('Rear Window')} />
-                  {/* Bed (top-down) */}
-                  <path d="M258 478 Q352 490 448 478 L452 600 Q352 610 254 600 Z" {...partProps('Bed Side')} />
-                  {/* Tailgate (top-down) */}
-                  <path d="M254 602 Q352 612 452 602 L455 630 Q352 640 252 630 Z" {...partProps('Tailgate')} />
-                  {/* Rear Bumper (top-down) */}
-                  <path d="M250 632 Q352 642 456 632 L458 658 Q352 668 248 658 Z" {...partProps('Rear Bumper')} />
-                  {/* Drip Rails */}
-                  <rect x="264" y="327" width="6" height="150" rx="2" {...partProps('Left Drip Rail')} />
-                  <rect x="436" y="327" width="6" height="150" rx="2" {...partProps('Right Drip Rail')} />
-
-                  {/* ── Left side view ── */}
-                  {/* Left Fender */}
-                  <path d="M30 225 L100 215 L170 215 Q185 230 185 260 L185 300 L100 300 Q45 300 30 270 Z" {...partProps('Left Fender')} />
-                  {/* Left Front Wheel */}
-                  <circle cx="105" cy="300" r="52" {...partProps('Left Front Wheel')} />
-                  {/* Left Front Door (side) */}
-                  <path d="M20 210 L185 210 L185 350 L20 350 Z" {...partProps('Left Front Door')} />
-                  {/* Left Rear Door (side) */}
-                  <path d="M20 352 L185 352 L185 450 L20 450 Z" {...partProps('Left Rear Door')} />
-                  {/* Left Bed Side (side) */}
-                  <path d="M15 452 L185 452 L185 590 L25 590 Z" {...partProps('Bed Side')} />
-                  {/* Left Rear Wheel */}
-                  <circle cx="80" cy="640" r="52" {...partProps('Left Rear Wheel')} />
-                  {/* Left Quarter Panel */}
-                  <path d="M15 590 L185 590 L185 640 Q175 700 120 725 L40 730 Q15 720 10 680 Z" {...partProps('Left Quarter Panel')} />
-
-                  {/* ── Right side view ── */}
-                  {/* Right Fender */}
-                  <path d="M525 260 L525 215 L615 215 L680 225 Q695 245 695 270 L695 300 L610 300 Q540 300 525 275 Z" {...partProps('Right Fender')} />
-                  {/* Right Front Wheel */}
-                  <circle cx="610" cy="300" r="52" {...partProps('Right Front Wheel')} />
-                  {/* Right Front Door (side) */}
-                  <path d="M525 210 L695 210 L695 350 L525 350 Z" {...partProps('Right Front Door')} />
-                  {/* Right Rear Door (side) */}
-                  <path d="M525 352 L695 352 L695 450 L525 450 Z" {...partProps('Right Rear Door')} />
-                  {/* Right Bed Side (side) */}
-                  <path d="M525 452 L695 452 L695 590 L525 590 Z" {...partProps('Bed Side')} />
-                  {/* Right Rear Wheel */}
-                  <circle cx="635" cy="640" r="52" {...partProps('Right Rear Wheel')} />
-                  {/* Right Quarter Panel */}
-                  <path d="M525 590 L695 590 L695 680 Q690 720 660 730 L575 730 Q540 720 530 700 L525 640 Z" {...partProps('Right Quarter Panel')} />
-
-                  {/* ── Rear view (bottom center) ── */}
-                  <path d="M235 790 L470 790 L480 830 L490 870 L488 920 L218 920 L216 870 L226 830 Z" {...partProps('Rear Bumper')} />
-                  <path d="M255 795 L450 795 L448 860 L257 860 Z" {...partProps('Tailgate')} />
-                  <rect x="260" y="860" width="38" height="25" rx="8" {...partProps('Taillights')} />
-                  <rect x="408" y="860" width="38" height="25" rx="8" {...partProps('Taillights')} />
-                </>
-              ) : (
-                <>
-                  {/* ── SEDAN LAYOUT ── */}
-
-                  {/* ── Front view (top center) ── */}
-                  <path d="M260 18 L445 18 L460 60 L470 100 L480 150 L225 150 L235 100 L245 60 Z" {...partProps('Front Bumper')} />
-                  <rect x="270" y="105" width="40" height="25" rx="12" {...partProps('Headlights')} />
-                  <rect x="395" y="105" width="40" height="25" rx="12" {...partProps('Headlights')} />
-
-                  {/* ── Top-down view (center) ── */}
-                  <path d="M258 200 Q352 185 448 200 L445 270 Q352 258 260 270 Z" {...partProps('Hood')} />
-                  <path d="M260 272 Q352 258 445 272 L435 330 Q352 320 270 330 Z" {...partProps('Windshield')} />
-                  <ellipse cx="218" cy="298" rx="10" ry="16" {...partProps('Left Mirror')} />
-                  <ellipse cx="488" cy="298" rx="10" ry="16" {...partProps('Right Mirror')} />
-                  <path d="M270 332 Q352 322 435 332 L435 480 Q352 490 270 480 Z" {...partProps('Roof')} />
-                  <path d="M226 300 L268 300 L268 400 L224 400 Z" {...partProps('Left Front Door')} />
-                  <path d="M224 402 L268 402 L268 500 L228 500 Z" {...partProps('Left Rear Door')} />
-                  <path d="M438 300 L480 300 L482 400 L438 400 Z" {...partProps('Right Front Door')} />
-                  <path d="M438 402 L480 402 L478 500 L438 500 Z" {...partProps('Right Rear Door')} />
-                  <path d="M270 482 Q352 492 435 482 L440 530 Q352 542 265 530 Z" {...partProps('Rear Window')} />
-                  <path d="M262 532 Q352 544 442 532 L448 580 Q352 595 258 580 Z" {...partProps('Trunk/Liftgate')} />
-                  <path d="M255 582 Q352 598 450 582 L455 610 Q352 625 252 610 Z" {...partProps('Rear Bumper')} />
-                  <rect x="264" y="332" width="6" height="200" rx="2" {...partProps('Left Drip Rail')} />
-                  <rect x="436" y="332" width="6" height="200" rx="2" {...partProps('Right Drip Rail')} />
-
-                  {/* ── Left side view ── */}
-                  <path d="M30 230 L100 220 L170 220 Q180 230 180 260 L180 310 L100 310 Q45 310 30 280 Z" {...partProps('Left Fender')} />
-                  <circle cx="100" cy="305" r="50" {...partProps('Left Front Wheel')} />
-                  <path d="M20 370 L185 370 L185 560 L30 560 Z" {...partProps('Left Rocker')} />
-                  <circle cx="75" cy="630" r="50" {...partProps('Left Rear Wheel')} />
-                  <path d="M15 560 L180 560 L180 620 Q175 680 120 710 L40 720 Q15 710 10 670 Z" {...partProps('Left Quarter Panel')} />
-
-                  {/* ── Right side view ── */}
-                  <path d="M525 260 L525 220 L615 220 L680 230 Q695 250 695 280 L695 310 L610 310 Q540 310 525 280 Z" {...partProps('Right Fender')} />
-                  <circle cx="610" cy="305" r="50" {...partProps('Right Front Wheel')} />
-                  <path d="M525 370 L695 370 L695 560 L525 560 Z" {...partProps('Right Rocker')} />
-                  <circle cx="635" cy="630" r="50" {...partProps('Right Rear Wheel')} />
-                  <path d="M525 560 L695 560 L695 670 Q690 710 660 720 L575 720 Q540 710 530 680 L525 620 Z" {...partProps('Right Quarter Panel')} />
-
-                  {/* ── Rear view (bottom center) ── */}
-                  <path d="M238 780 L468 780 L478 820 L488 870 L485 920 L220 920 L218 870 L228 820 Z" {...partProps('Rear Bumper')} />
-                  <rect x="268" y="855" width="35" height="25" rx="8" {...partProps('Taillights')} />
-                  <rect x="405" y="855" width="35" height="25" rx="8" {...partProps('Taillights')} />
-                </>
+          <div className="relative h-full w-full overflow-hidden rounded-md">
+            <div
+              className="[&_svg]:block [&_svg]:h-full [&_svg]:w-full [&_svg]:max-h-none"
+              dangerouslySetInnerHTML={{ __html: undercarriageSketchSvg }}
+            />
+            <svg
+              viewBox={`0 0 ${UNDERCARRIAGE_SKETCH_VIEWBOX.w} ${UNDERCARRIAGE_SKETCH_VIEWBOX.h}`}
+              preserveAspectRatio="xMidYMid meet"
+              className={cn(
+                'absolute inset-0 h-full w-full',
+                !onSelectPartByName && 'pointer-events-none',
               )}
+            >
+              <rect
+                x={0}
+                y={0}
+                width={UNDERCARRIAGE_SKETCH_VIEWBOX.w}
+                height={UNDERCARRIAGE_SKETCH_VIEWBOX.h}
+                fill="transparent"
+                {...partProps('Undercarriage')}
+                className={onSelectPartByName ? 'cursor-pointer' : undefined}
+                onClick={onSelectPartByName ? () => onSelectPartByName('Undercarriage') : undefined}
+              />
             </svg>
-          </>
+          </div>
+        ) : diagramSurface === 'interior' ? (
+          <div className="relative h-full w-full overflow-hidden rounded-md">
+            <div
+              className="[&_svg]:block [&_svg]:h-full [&_svg]:w-full [&_svg]:max-h-none"
+              dangerouslySetInnerHTML={{ __html: interiorDamagesSketchSvg }}
+            />
+            <svg
+              viewBox={`0 0 ${INTERIOR_SKETCH_VIEWBOX.w} ${INTERIOR_SKETCH_VIEWBOX.h}`}
+              preserveAspectRatio="xMidYMid meet"
+              className={cn(
+                'absolute inset-0 h-full w-full',
+                !onSelectPartByName && 'pointer-events-none',
+              )}
+            >
+              <rect
+                x={0}
+                y={0}
+                width={INTERIOR_SKETCH_VIEWBOX.w}
+                height={INTERIOR_SKETCH_VIEWBOX.h}
+                fill="transparent"
+                {...partProps('Interior')}
+                className={onSelectPartByName ? 'cursor-pointer' : undefined}
+                onClick={onSelectPartByName ? () => onSelectPartByName('Interior') : undefined}
+              />
+            </svg>
+          </div>
+        ) : isSedanVehicle ? (
+          <SedanUnifiedDiagram
+            damages={damages}
+            onPartClick={onSelectPartByName}
+            className={cn(
+              'absolute left-0 top-0 h-full w-full [&_svg]:block [&_svg]:h-full [&_svg]:w-full',
+              !onSelectPartByName && 'pointer-events-none',
+            )}
+          />
+        ) : (
+          <div className="flex min-h-[220px] w-full flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-muted/15 px-3 py-8 text-center">
+            <Truck className="h-8 w-8 text-muted-foreground" aria-hidden />
+            <p className="text-xs font-semibold text-foreground">Pickup / truck map</p>
+            <p className="max-w-[14rem] text-[11px] leading-snug text-muted-foreground">
+              Interactive diagram is sedan-only for now. Add your pickup sketch asset to wire this view.
+            </p>
+          </div>
         )}
       </div>
     </div>

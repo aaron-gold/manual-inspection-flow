@@ -72,3 +72,8 @@ export async function loadPersistedBundle(): Promise<PersistedBundle | null> {
 export async function savePersistedBundle(bundle: PersistedBundle): Promise<void> {
   await store.setItem(BUNDLE_KEY, bundle);
 }
+
+/** Removes the saved bundle from this browser (IndexedDB). Next save will recreate storage. */
+export async function clearPersistedBundle(): Promise<void> {
+  await store.removeItem(BUNDLE_KEY);
+}

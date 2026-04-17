@@ -62,8 +62,11 @@ export default function InspectionViewportImage({ src, alt, zoom, onZoomChange }
     el.scrollTop = sh > 0 ? sh / 2 : 0;
   }, [zoom, natural, fit, box.w, box.h, displayW, displayH]);
 
-  const onWheel = useCallback(
-    (e: React.WheelEvent) => {
+  /** React's `onWheel` is passive in many browsers — `preventDefault` throws. Use `{ passive: false }`. */
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const handler = (e: WheelEvent) => {
       const withModifier = e.ctrlKey || e.metaKey;
       if (zoom > 1 && !withModifier) {
         return;
@@ -72,9 +75,10 @@ export default function InspectionViewportImage({ src, alt, zoom, onZoomChange }
       e.stopPropagation();
       const delta = e.deltaY > 0 ? -0.07 : 0.07;
       onZoomChange(Math.min(4, Math.max(1, zoom + delta)));
-    },
-    [zoom, onZoomChange],
-  );
+    };
+    el.addEventListener('wheel', handler, { passive: false });
+    return () => el.removeEventListener('wheel', handler);
+  }, [zoom, onZoomChange]);
 
   const onPointerDown = useCallback(
     (e: React.PointerEvent) => {
@@ -118,7 +122,6 @@ export default function InspectionViewportImage({ src, alt, zoom, onZoomChange }
       className={`relative w-full h-full min-h-0 overflow-auto overscroll-contain ${
         zoom > 1 ? 'cursor-grab active:cursor-grabbing' : ''
       }`}
-      onWheel={onWheel}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={endDrag}
