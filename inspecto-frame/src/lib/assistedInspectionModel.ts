@@ -29,6 +29,12 @@ export interface Damage {
   flagged?: boolean;
   damageName?: string;
   reportId?: string;
+  /** Which UVeye pipeline produced this row (for CSV/PDF reports). */
+  inspectionModule?: 'legacy' | 'atlas' | 'helios' | 'artemis';
+  /** Physical size from Atlas when present (mm). */
+  sizeDiagonalMm?: number;
+  sizeWidthMm?: number;
+  sizeHeightMm?: number;
 }
 
 export const CAR_PARTS: CarPart[] = [
@@ -92,4 +98,15 @@ function canonicalPartKey(part: string): string {
 
 export function partNameMatches(uiPart: string, apiPart: string): boolean {
   return canonicalPartKey(uiPart) === canonicalPartKey(apiPart);
+}
+
+/**
+ * Area label for exports: mirrors include side — "Left — Mirror" / "Right — Mirror".
+ */
+export function areaLabelForDamageReport(partName: string): string {
+  const p = CAR_PARTS.find((cp) => partNameMatches(cp.name, partName));
+  if (!p) return '';
+  if (p.name === 'Left Mirror') return 'Left — Mirror';
+  if (p.name === 'Right Mirror') return 'Right — Mirror';
+  return p.area;
 }

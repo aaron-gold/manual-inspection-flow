@@ -139,7 +139,7 @@ export default function InspectionDashboard({
         <div className="mb-10 p-5 rounded-xl border border-border bg-card shadow-sm">
           <h2 className="text-sm font-semibold text-foreground mb-1">Retrieve a scan</h2>
           <p className="text-xs text-muted-foreground mb-4">
-            Enter the UVeye inspection ID (UUID from the portal or API — if you see “pattern” errors, check for extra spaces or missing characters).
+            Enter the UVeye inspection ID.
           </p>
           <form onSubmit={handleSubmit} className="flex flex-col sm:flex-row gap-3">
             <input

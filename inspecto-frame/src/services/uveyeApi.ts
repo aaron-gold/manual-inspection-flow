@@ -156,6 +156,8 @@ export interface UveyeAlert {
   frameIndex?: number;
   /** Optional display name from API (`name`, `damageName`, `displayName`, …) */
   damageName?: string;
+  /** Which pipeline produced this alert (for damage reports). */
+  inspectionModule?: 'legacy' | 'atlas' | 'helios' | 'artemis';
   [key: string]: unknown;
 }
 
@@ -326,6 +328,18 @@ const UVeye_DISPLAY_TO_UI: Record<string, string> = {
   'right headlight': 'Headlights',
   'right mirror cover': 'Right Mirror',
   'left mirror cover': 'Left Mirror',
+  /** Door handles → same-side door panel */
+  'door handle front right': 'Right Front Door',
+  'door handle front left': 'Left Front Door',
+  'door handle rear right': 'Right Rear Door',
+  'door handle rear left': 'Left Rear Door',
+  /** Plates → bumper on that end of the vehicle */
+  'rear license plate': 'Rear Bumper',
+  'front license plate': 'Front Bumper',
+  /** Roof rack → single Roof panel in UI */
+  'roof rack': 'Roof',
+  'roof rack right': 'Roof',
+  'roof rack left': 'Roof',
 };
 
 const UVeye_CODE_TO_UI: Record<string, string> = {
@@ -347,6 +361,15 @@ const UVeye_CODE_TO_UI: Record<string, string> = {
   mirrorcoverleft: 'Left Mirror',
   trunk: 'Trunk/Liftgate',
   roof: 'Roof',
+  doorhandlefrontright: 'Right Front Door',
+  doorhandlefrontleft: 'Left Front Door',
+  doorhandlerearright: 'Right Rear Door',
+  doorhandlerearleft: 'Left Rear Door',
+  licenseplaterear: 'Rear Bumper',
+  licenseplatefront: 'Front Bumper',
+  roofrack: 'Roof',
+  roofrackright: 'Roof',
+  roofrackleft: 'Roof',
 };
 
 export function mapUveyePartToUiPartName(displayName: string, bodyPartCode: string): string {
@@ -426,6 +449,15 @@ function isLowTreadGrooveDamage(g: Record<string, unknown>): boolean {
 
 function humanizeDetectionType(raw: string): string {
   if (!raw) return 'Damage';
+  const t = raw.trim();
+  /**
+   * Dent types from Atlas: show **Dent** for paint-free dents; **Dent with paint** when paint damage
+   * is involved (e.g. `BodyDentWithPaintDamage`). Other body types still use the generic humanizer below.
+   */
+  if (/^BodyDent/i.test(t)) {
+    if (/WithPaint/i.test(t)) return 'Dent with paint';
+    return 'Dent';
+  }
   return raw
     .replace(/^Body/, '')
     .replace(/^Undercarriage/, '')
@@ -480,6 +512,30 @@ function inferAtlasPortalFromAnimatedFrames(
   return undefined;
 }
 
+/**
+ * Atlas `detections[]` mm fields — diagonal = √(w²+h²) when both exist; else `lengthInMm` (scratches).
+ */
+function atlasSizesFromDetection(o: Record<string, unknown>): {
+  diagonalMm?: number;
+  widthMm?: number;
+  heightMm?: number;
+} {
+  const w =
+    typeof o.widthInMm === 'number' && Number.isFinite(o.widthInMm) ? o.widthInMm : undefined;
+  const h =
+    typeof o.heightInMm === 'number' && Number.isFinite(o.heightInMm) ? o.heightInMm : undefined;
+  const len =
+    typeof o.lengthInMm === 'number' && Number.isFinite(o.lengthInMm) ? o.lengthInMm : undefined;
+  let diagonalMm: number | undefined;
+  if (w != null && h != null) diagonalMm = Math.sqrt(w * w + h * h);
+  else if (len != null) diagonalMm = len;
+  return {
+    diagonalMm,
+    widthMm: w,
+    heightMm: h,
+  };
+}
+
 function atlasDetectionsToAlerts(response: UveyeInspectionResponse): UveyeAlert[] {
   const root = response as Record<string, unknown>;
   const atlas = root.atlas;
@@ -522,6 +578,7 @@ function atlasDetectionsToAlerts(response: UveyeInspectionResponse): UveyeAlert[
       if (frameRaw === undefined) frameRaw = inferred.frameIndex;
     }
     const damageName = pickDetectionDisplayName(o);
+    const sizes = atlasSizesFromDetection(o);
     out.push({
       id: String(o.id ?? `atlas_${i}`),
       part,
@@ -532,6 +589,10 @@ function atlasDetectionsToAlerts(response: UveyeInspectionResponse): UveyeAlert[
       cameraId: cameraId || undefined,
       frameIndex: frameRaw,
       damageName: damageName || undefined,
+      inspectionModule: 'atlas',
+      sizeDiagonalMm: sizes.diagonalMm,
+      sizeWidthMm: sizes.widthMm,
+      sizeHeightMm: sizes.heightMm,
     });
   }
   return out;
@@ -569,6 +630,7 @@ function heliosDetectionsToAlerts(response: UveyeInspectionResponse): UveyeAlert
       location: { x, y },
       frameIndex: 0,
       damageName: title,
+      inspectionModule: 'helios',
     });
   }
   return out;
@@ -714,6 +776,7 @@ function artemisTireAlerts(response: UveyeInspectionResponse): UveyeAlert[] {
           imageUrl: url,
           location: { x, y },
           damageName,
+          inspectionModule: 'artemis',
         });
         idx += 1;
       }
@@ -750,6 +813,7 @@ function artemisTireAlerts(response: UveyeInspectionResponse): UveyeAlert[] {
           imageUrl: url,
           location: { x, y },
           damageName,
+          inspectionModule: 'artemis',
         });
         idx += 1;
       }
@@ -789,6 +853,7 @@ function artemisTireAlerts(response: UveyeInspectionResponse): UveyeAlert[] {
           imageUrl: treadGrooveViewUrl,
           location: { x: pin.x, y: pin.y },
           damageName: `Tread: low depth (${depthLabel} — at or below 3/32")`,
+          inspectionModule: 'artemis',
         });
         idx += 1;
       }
@@ -799,9 +864,13 @@ function artemisTireAlerts(response: UveyeInspectionResponse): UveyeAlert[] {
 
 /** Legacy `alerts` plus `atlas.detections`, `helios.detections` (undercarriage), and Artemis tires. */
 export function getCombinedAlerts(response: UveyeInspectionResponse): UveyeAlert[] {
-  const legacy = response.alerts ?? [];
+  const legacy = Array.isArray(response.alerts) ? response.alerts : [];
+  const legacyTagged = (legacy as UveyeAlert[]).map((a) => ({
+    ...a,
+    inspectionModule: 'legacy' as const,
+  }));
   return [
-    ...legacy,
+    ...legacyTagged,
     ...atlasDetectionsToAlerts(response),
     ...heliosDetectionsToAlerts(response),
     ...artemisTireAlerts(response),
@@ -1086,6 +1155,10 @@ export type UveyeMappedDamage = {
   damageName?: string;
   /** Stable id from payload (`atlas.detections[].id` etc.) */
   reportId?: string;
+  inspectionModule?: 'legacy' | 'atlas' | 'helios' | 'artemis';
+  sizeDiagonalMm?: number;
+  sizeWidthMm?: number;
+  sizeHeightMm?: number;
 };
 
 /**
@@ -1131,6 +1204,10 @@ export function mergePersistedDamagesWithFreshMap<
     atlasFrameIndex?: number;
     x?: number;
     y?: number;
+    inspectionModule?: 'legacy' | 'atlas' | 'helios' | 'artemis';
+    sizeDiagonalMm?: number;
+    sizeWidthMm?: number;
+    sizeHeightMm?: number;
   },
 >(saved: T[], fresh: UveyeMappedDamage[]): T[] {
   const pool = [...fresh];
@@ -1173,6 +1250,10 @@ export function mergePersistedDamagesWithFreshMap<
       portalUrl: m.portalUrl ?? d.portalUrl,
       atlasCameraId: m.atlasCameraId ?? d.atlasCameraId,
       atlasFrameIndex: m.atlasFrameIndex ?? d.atlasFrameIndex,
+      inspectionModule: m.inspectionModule ?? d.inspectionModule,
+      sizeDiagonalMm: m.sizeDiagonalMm ?? d.sizeDiagonalMm,
+      sizeWidthMm: m.sizeWidthMm ?? d.sizeWidthMm,
+      sizeHeightMm: m.sizeHeightMm ?? d.sizeHeightMm,
     };
   });
 }
@@ -1288,6 +1369,10 @@ export function mapUveyeAlertsToDamages(
         : pickDetectionDisplayName(rec);
     const reportId = alert.id != null ? String(alert.id) : undefined;
 
+    const mod = rec.inspectionModule;
+    const inspectionModule =
+      mod === 'legacy' || mod === 'atlas' || mod === 'helios' || mod === 'artemis' ? mod : undefined;
+
     return {
       id: Date.now() + index,
       part: alert.part || 'Unknown',
@@ -1306,6 +1391,19 @@ export function mapUveyeAlertsToDamages(
       atlasFrameIndex: portalFrameIndex,
       damageName: apiName || undefined,
       reportId,
+      inspectionModule,
+      sizeDiagonalMm:
+        typeof rec.sizeDiagonalMm === 'number' && Number.isFinite(rec.sizeDiagonalMm)
+          ? rec.sizeDiagonalMm
+          : undefined,
+      sizeWidthMm:
+        typeof rec.sizeWidthMm === 'number' && Number.isFinite(rec.sizeWidthMm)
+          ? rec.sizeWidthMm
+          : undefined,
+      sizeHeightMm:
+        typeof rec.sizeHeightMm === 'number' && Number.isFinite(rec.sizeHeightMm)
+          ? rec.sizeHeightMm
+          : undefined,
     };
   });
 }

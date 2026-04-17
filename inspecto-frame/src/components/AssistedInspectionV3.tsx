@@ -27,6 +27,7 @@ import {
   type Damage,
 } from '@/lib/assistedInspectionModel';
 import { SEDAN_LAYOUT_BASE_PX } from '@/lib/sedanDiagramCalibration';
+import { DamageReportPreviewDialog } from '@/components/DamageReportPreviewDialog';
 import { SedanUnifiedDiagram } from '@/components/SedanUnifiedDiagram';
 import interiorDamagesSketchSvg from '@/assets/interior-damages-sketch.svg?raw';
 import undercarriageSketchSvg from '@/assets/undercarriage-sketch.svg?raw';
@@ -54,6 +55,7 @@ import {
   CheckCircle,
   XCircle,
   Truck,
+  Table2,
 } from 'lucide-react';
 
 /** Same corner slugs as `buildCameraFramesFromResponse` (`artemis_leftFront_tread`, …). */
@@ -194,6 +196,7 @@ export default function AssistedInspectionV3({
   
   // Summary view state
   const [showSummary, setShowSummary] = useState(false);
+  const [damageReportPreviewOpen, setDamageReportPreviewOpen] = useState(false);
 
   // Damage review navigation
   const [selectedDamageIdx, setSelectedDamageIdx] = useState(0);
@@ -345,6 +348,15 @@ export default function AssistedInspectionV3({
       setReviewedParts(r => new Set(r).add(prev.name));
     }
   }, [activePart, partFrames.length, currentFrameIdx, partsWithDamage, allFrames, damages]);
+
+  /** Approve/reject then advance to the next frame or part (same as the image “next” chevron). */
+  const handleConfirmAndAdvance = useCallback(
+    (id: number, confirmed: boolean) => {
+      setDamageConfirmed(id, confirmed);
+      nextFrameOrPart();
+    },
+    [setDamageConfirmed, nextFrameOrPart],
+  );
 
   useEffect(() => {
     if (!activePart || partFrames.length === 0) return;
@@ -641,6 +653,14 @@ export default function AssistedInspectionV3({
         />
       )}
 
+      <DamageReportPreviewDialog
+        open={damageReportPreviewOpen}
+        onOpenChange={setDamageReportPreviewOpen}
+        payload={payload}
+        damages={damages}
+        vehicleLabel={vehicleLabel}
+      />
+
       {/* Desktop / tablet header */}
       <div className="hidden md:flex items-center justify-between px-5 py-3 bg-card border-b border-border shrink-0 gap-4">
         <div className="flex items-center gap-3 min-w-0">
@@ -697,6 +717,14 @@ export default function AssistedInspectionV3({
             title="View summary report"
           >
             <FileText size={14} /> Summary
+          </button>
+          <button
+            type="button"
+            onClick={() => setDamageReportPreviewOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors border border-border"
+            title="Preview damage report table, then download CSV"
+          >
+            <Table2 size={14} /> Damage report
           </button>
           <div className="text-right">
             <p className="text-xs font-semibold text-foreground">{reviewedParts.size} of {allParts.length} parts</p>
@@ -772,6 +800,14 @@ export default function AssistedInspectionV3({
             title="Summary"
           >
             <FileText size={18} />
+          </button>
+          <button
+            type="button"
+            onClick={() => setDamageReportPreviewOpen(true)}
+            className="p-2 rounded-lg border border-border text-muted-foreground hover:bg-accent shrink-0"
+            title="Preview damage report table, then download CSV"
+          >
+            <Table2 size={18} />
           </button>
           <button
             type="button"
@@ -863,16 +899,16 @@ export default function AssistedInspectionV3({
                           <button
                             type="button"
                             title="Approve"
-                            onClick={() => setDamageConfirmed(dmg.id, true)}
-                            className={`rounded-md p-1.5 ${dmg.confirmed === true ? 'text-primary' : 'text-muted-foreground hover:bg-primary/10'}`}
+                            onClick={() => handleConfirmAndAdvance(dmg.id, true)}
+                            className={`rounded-md p-1.5 ${dmg.confirmed === true ? 'bg-green-700 text-white' : 'bg-green-600 text-white hover:bg-green-700'}`}
                           >
                             <CheckCircle size={18} />
                           </button>
                           <button
                             type="button"
                             title="Reject"
-                            onClick={() => setDamageConfirmed(dmg.id, false)}
-                            className={`rounded-md p-1.5 ${dmg.confirmed === false ? 'text-destructive' : 'text-muted-foreground hover:bg-destructive/10'}`}
+                            onClick={() => handleConfirmAndAdvance(dmg.id, false)}
+                            className={`rounded-md p-1.5 ${dmg.confirmed === false ? 'bg-red-600 text-white' : 'bg-red-500 text-white hover:bg-red-600'}`}
                           >
                             <XCircle size={18} />
                           </button>
@@ -997,12 +1033,12 @@ export default function AssistedInspectionV3({
                       {(dmg.confirmed === true || dmg.confirmed === false || dmg.isDuplicate || dmg.flagged) && (
                         <div className="flex items-center gap-2 flex-wrap mt-1">
                           {dmg.confirmed === true && (
-                            <span className="text-[10px] font-medium text-primary inline-flex items-center gap-0.5">
+                            <span className="text-[10px] font-medium text-green-700 dark:text-green-400 inline-flex items-center gap-0.5">
                               <CheckCircle size={10} /> Approved
                             </span>
                           )}
                           {dmg.confirmed === false && (
-                            <span className="text-[10px] font-medium text-destructive inline-flex items-center gap-0.5">
+                            <span className="text-[10px] font-medium text-red-700 dark:text-red-400 inline-flex items-center gap-0.5">
                               <XCircle size={10} /> Rejected
                             </span>
                           )}
@@ -1088,17 +1124,17 @@ export default function AssistedInspectionV3({
                     <div className="flex flex-wrap items-center gap-1.5 shrink-0 justify-end">
                       <button
                         type="button"
-                        title="Approve this detection for this frame (counts in header & summary)"
-                        onClick={() => setDamageConfirmed(dmg.id, true)}
-                        className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold border-2 transition-all ${dmg.confirmed === true ? 'bg-primary border-primary text-primary-foreground shadow-sm' : 'border-primary/40 text-primary hover:bg-primary/10'}`}
+                        title="Approve this detection for this frame (counts in header & summary), then go to next image"
+                        onClick={() => handleConfirmAndAdvance(dmg.id, true)}
+                        className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold border-2 transition-all shadow-sm ${dmg.confirmed === true ? 'bg-green-700 border-green-600 text-white ring-2 ring-green-400/40' : 'bg-green-600 border-green-600 text-white hover:bg-green-700'}`}
                       >
                         <CheckCircle size={14} /> Approve
                       </button>
                       <button
                         type="button"
-                        title="Reject this detection for this frame (counts in header & summary)"
-                        onClick={() => setDamageConfirmed(dmg.id, false)}
-                        className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold border-2 transition-all ${dmg.confirmed === false ? 'bg-destructive border-destructive text-destructive-foreground shadow-sm' : 'border-destructive/40 text-destructive hover:bg-destructive/10'}`}
+                        title="Reject this detection for this frame (counts in header & summary), then go to next image"
+                        onClick={() => handleConfirmAndAdvance(dmg.id, false)}
+                        className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold border-2 transition-all shadow-sm ${dmg.confirmed === false ? 'bg-red-700 border-red-600 text-white ring-2 ring-red-400/40' : 'bg-red-600 border-red-600 text-white hover:bg-red-700'}`}
                       >
                         <XCircle size={14} /> Reject
                       </button>
