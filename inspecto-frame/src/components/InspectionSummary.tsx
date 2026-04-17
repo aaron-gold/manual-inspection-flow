@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { CheckCircle, XCircle, AlertTriangle, Download, ArrowLeft, Camera, Clock, ChevronDown, Flag, Copy, Filter } from 'lucide-react';
+import { CheckCircle, XCircle, AlertTriangle, Download, ArrowLeft, Camera, Clock, ChevronDown, Flag, Copy, Filter, Percent } from 'lucide-react';
 import { generateInspectionPdf } from './InspectionPdfReport';
 import {
   Select,
@@ -92,6 +92,9 @@ export default function InspectionSummary({
   const dismissed = damages.filter(d => d.confirmed === false);
   const pending = damages.filter(d => d.confirmed == null);
   const totalDamages = damages.length;
+  /** AI findings plus any rows the user added manually — same list as Total Detections. */
+  const accuracyPct =
+    totalDamages > 0 ? Math.round((confirmed.length / totalDamages) * 1000) / 10 : null;
   const duplicates = damages.filter(d => d.isDuplicate);
   const flagged = damages.filter(d => d.flagged);
 
@@ -148,12 +151,19 @@ export default function InspectionSummary({
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-5 space-y-5">
-        {/* Stats cards */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <StatCard label="Total Detections" value={totalDamages} icon={<AlertTriangle size={16} />} color="text-foreground" />
+        {/* Stats cards — total count includes AI detections and user-added damages */}
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+          <StatCard label="Total Detections" value={totalDamages} icon={<AlertTriangle size={16} />} color="text-foreground" hint="AI + manual" />
           <StatCard label="Confirmed" value={confirmed.length} icon={<CheckCircle size={16} />} color="text-primary" />
           <StatCard label="Dismissed" value={dismissed.length} icon={<XCircle size={16} />} color="text-destructive" />
           <StatCard label="Pending Review" value={pending.length} icon={<Clock size={16} />} color="text-muted-foreground" />
+          <StatCard
+            label="Accuracy"
+            value={accuracyPct === null ? '—' : `${accuracyPct}%`}
+            icon={<Percent size={16} />}
+            color="text-primary"
+            hint="Confirmed ÷ total detections"
+          />
         </div>
 
         {(duplicates.length > 0 || flagged.length > 0) && (
@@ -325,12 +335,26 @@ function CollapsiblePart({ part, dmgs }: { part: string; dmgs: Damage[] }) {
   );
 }
 
-function StatCard({ label, value, icon, color }: { label: string; value: number; icon: React.ReactNode; color: string }) {
+function StatCard({
+  label,
+  value,
+  icon,
+  color,
+  hint,
+}: {
+  label: string;
+  value: number | string;
+  icon: React.ReactNode;
+  color: string;
+  /** Short subtitle under the label (e.g. formula or scope). */
+  hint?: string;
+}) {
   return (
     <div className="bg-card rounded-xl border border-border p-4 flex flex-col items-center text-center">
       <div className={`mb-1 ${color}`}>{icon}</div>
-      <div className="text-2xl font-bold text-foreground">{value}</div>
+      <div className="text-2xl font-bold text-foreground tabular-nums">{value}</div>
       <div className="text-xs text-muted-foreground mt-0.5">{label}</div>
+      {hint ? <div className="text-[10px] text-muted-foreground/90 mt-1 leading-tight">{hint}</div> : null}
     </div>
   );
 }

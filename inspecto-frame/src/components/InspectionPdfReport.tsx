@@ -79,6 +79,9 @@ export async function generateInspectionPdf({
   const pending = damages.filter(d => d.confirmed == null).length;
   const dup = damages.filter(d => d.isDuplicate).length;
   const flagged = damages.filter(d => d.flagged).length;
+  const n = damages.length;
+  const accuracyStr =
+    n > 0 ? `${Math.round((confirmed / n) * 1000) / 10}% (confirmed ÷ total; total includes AI + manual)` : '—';
 
   doc.setFontSize(11);
   doc.setFont('helvetica', 'bold');
@@ -89,7 +92,8 @@ export async function generateInspectionPdf({
   doc.setFont('helvetica', 'normal');
   const stats = [
     `Parts Reviewed: ${reviewedParts.size} / ${totalParts}`,
-    `Total Detections: ${damages.length}`,
+    `Total Detections: ${damages.length} (AI + manual)`,
+    `Accuracy: ${accuracyStr}`,
     `Confirmed: ${confirmed}  |  Dismissed: ${dismissed}  |  Pending: ${pending}`,
     `Marked duplicate: ${dup}  |  Flagged: ${flagged}`,
   ];
