@@ -423,8 +423,6 @@ function CollapsiblePart({
                   {(d.captureDataUrl || d.captureImageUrl) && (
                     <span className="text-muted-foreground"> · camera</span>
                   )}
-                  {' · '}
-                  <span className={d.severity === 'High' ? 'text-destructive' : d.severity === 'Medium' ? 'text-yellow-600 dark:text-yellow-400' : ''}>{d.severity}</span>
                   {d.isDuplicate && <span className="ml-1">· duplicate</span>}
                   {d.flagged && <span className="ml-1 text-amber-700 dark:text-amber-300">· flagged</span>}
                 </div>

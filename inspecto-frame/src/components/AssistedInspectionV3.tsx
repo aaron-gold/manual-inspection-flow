@@ -746,7 +746,7 @@ export default function AssistedInspectionV3({
   );
 
   return (
-    <div className="flex flex-col h-screen w-full bg-muted font-sans text-foreground overflow-hidden">
+    <div className="flex flex-col h-dvh min-h-0 w-full bg-muted font-sans text-foreground overflow-hidden">
       {/* Camera Capture Modal */}
       {showCameraCapture && (
         <CameraCapture
@@ -825,7 +825,13 @@ export default function AssistedInspectionV3({
               <ChevronLeft size={18} />
             </button>
           )}
-          <div className="w-9 h-9 bg-foreground rounded-lg flex items-center justify-center text-background font-bold text-xs shrink-0">UV</div>
+          <img
+            src="/favicon.png"
+            alt=""
+            width={56}
+            height={56}
+            className="h-12 w-12 shrink-0 rounded-xl object-contain bg-muted ring-1 ring-border"
+          />
           <div className="min-w-0">
             <h1 className="font-bold text-base tracking-tight truncate">{vehicleLabel || 'AutoInspect'}</h1>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -926,7 +932,13 @@ export default function AssistedInspectionV3({
               <ChevronLeft size={20} />
             </button>
           )}
-          <div className="w-8 h-8 bg-foreground rounded-lg flex items-center justify-center text-background font-bold text-[10px] shrink-0">UV</div>
+          <img
+            src="/favicon.png"
+            alt=""
+            width={48}
+            height={48}
+            className="h-11 w-11 shrink-0 rounded-lg object-contain bg-muted ring-1 ring-border"
+          />
           <h1 className="font-bold text-sm leading-tight truncate flex-1 min-w-0">{vehicleLabel || 'AutoInspect'}</h1>
           <button
             type="button"

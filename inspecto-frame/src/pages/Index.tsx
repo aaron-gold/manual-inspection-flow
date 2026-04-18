@@ -215,7 +215,7 @@ export default function Index() {
 
     if (!payload) {
       return (
-        <div className="h-screen w-full flex items-center justify-center text-muted-foreground text-sm">
+        <div className="h-dvh min-h-0 w-full flex items-center justify-center text-muted-foreground text-sm">
           Missing inspection data. Return to the dashboard and retrieve again.
         </div>
       );
@@ -225,7 +225,7 @@ export default function Index() {
     const initialCaptures = capturesById[view.id];
 
     return (
-      <div className="h-screen w-full flex flex-col">
+      <div className="h-dvh min-h-0 w-full flex flex-col">
         <AssistedInspectionV3
           key={view.id}
           payload={payload}
@@ -243,7 +243,7 @@ export default function Index() {
   }
 
   return (
-    <div className="h-screen w-full flex flex-col">
+    <div className="h-dvh min-h-0 w-full flex flex-col">
       <div className="flex-1 min-h-0">
         {!hydrated ? (
           <div className="h-full flex items-center justify-center text-muted-foreground text-sm">
