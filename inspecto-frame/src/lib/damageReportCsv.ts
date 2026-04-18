@@ -113,8 +113,15 @@ export function damageInspectionSummaryCounts(damages: Damage[]): {
   aiRows: number;
   /** Inspector-added rows (`ai === false`), incl. camera-linked. */
   manualRows: number;
-  /** Percent string e.g. `89.5%`, or `—` when there are no rows. */
-  accuracyPctStr: string;
+  /** Approved rows that are AI-sourced (for recall denominator split). */
+  approvedAi: number;
+  /** `approved ÷ total` — percent string e.g. `89.5%`, or `—` when there are no rows. */
+  precisionPctStr: string;
+  /**
+   * `100%` when there are no manual (inspector-added) rows; otherwise
+   * `approvedAi ÷ (approvedAi + manualRows)` so manual adds are not double-counted with approved manual rows.
+   */
+  recallPctStr: string;
 } {
   const totalDamages = damages.length;
   const approved = damages.filter((d) => d.confirmed === true).length;
@@ -124,8 +131,13 @@ export function damageInspectionSummaryCounts(damages: Damage[]): {
   const flagged = damages.filter((d) => d.flagged).length;
   const manualRows = damages.filter((d) => d.ai === false).length;
   const aiRows = totalDamages - manualRows;
-  const accuracyPctStr =
+  const approvedAi = damages.filter((d) => d.ai !== false && d.confirmed === true).length;
+  const precisionPctStr =
     totalDamages > 0 ? `${Math.round((approved / totalDamages) * 1000) / 10}%` : '—';
+  const recallPctStr =
+    manualRows === 0
+      ? '100%'
+      : `${Math.round((approvedAi / (approvedAi + manualRows)) * 1000) / 10}%`;
   return {
     totalDamages,
     approved,
@@ -135,7 +147,9 @@ export function damageInspectionSummaryCounts(damages: Damage[]): {
     flagged,
     aiRows,
     manualRows,
-    accuracyPctStr,
+    approvedAi,
+    precisionPctStr,
+    recallPctStr,
   };
 }
 
@@ -216,7 +230,13 @@ export function buildDamageReportCsv(
   lines.push(['Approved count', escapeCsvCell(String(s.approved))].join(','));
   lines.push(['Reject count', escapeCsvCell(String(s.rejected))].join(','));
   lines.push(['Pending count', escapeCsvCell(String(s.pending))].join(','));
-  lines.push(['Accuracy (approved ÷ total damages)', escapeCsvCell(s.accuracyPctStr)].join(','));
+  lines.push(['Precision (approved ÷ total damages)', escapeCsvCell(s.precisionPctStr)].join(','));
+  lines.push(
+    [
+      'Recall (100% if no manual rows; else approved AI ÷ (approved AI + manual rows))',
+      escapeCsvCell(s.recallPctStr),
+    ].join(','),
+  );
   lines.push(['Marked duplicates', escapeCsvCell(String(s.markedDuplicates))].join(','));
   lines.push(['Flagged', escapeCsvCell(String(s.flagged))].join(','));
   lines.push(['AI-sourced rows', escapeCsvCell(String(s.aiRows))].join(','));

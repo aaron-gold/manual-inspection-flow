@@ -13,6 +13,7 @@ import {
   Filter,
   Percent,
   Target,
+  Crosshair,
 } from 'lucide-react';
 import { generateInspectionPdf } from './InspectionPdfReport';
 import type { UveyeInspectionResponse } from '@/services/uveyeApi';
@@ -192,7 +193,7 @@ export default function InspectionSummary({
       <div className="flex-1 overflow-y-auto p-5 space-y-5">
         {/* Stats: row 1 — totals & review mix; row 2 — progress & duplicates */}
         <div className="space-y-3">
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-6 gap-3">
             <StatCard
               label="Total detections"
               value={totalDamages}
@@ -216,14 +217,25 @@ export default function InspectionSummary({
               }
             />
             <StatCard
-              label="Accuracy"
-              value={summaryMetrics.accuracyPctStr}
+              label="Precision"
+              value={summaryMetrics.precisionPctStr}
               icon={<Target size={16} />}
               color="text-foreground"
               hint={
                 totalDamages === 0
                   ? 'No rows to score'
                   : `${summaryMetrics.approved} approved ÷ ${summaryMetrics.totalDamages} total`
+              }
+            />
+            <StatCard
+              label="Recall"
+              value={summaryMetrics.recallPctStr}
+              icon={<Crosshair size={16} />}
+              color="text-foreground"
+              hint={
+                summaryMetrics.manualRows === 0
+                  ? 'No inspector-added rows — full recall'
+                  : `${summaryMetrics.approvedAi} approved AI ÷ (${summaryMetrics.approvedAi} + ${summaryMetrics.manualRows} manual)`
               }
             />
           </div>

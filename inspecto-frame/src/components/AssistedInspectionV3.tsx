@@ -21,6 +21,7 @@ import { useIsMobile } from '@/hooks/use-mobile';
 import { cn } from '@/lib/utils';
 import {
   ALL_AREAS,
+  applyDefaultApprovedForManualDamages,
   CAR_PARTS,
   isSyntheticDamageFrameId,
   partNameMatches,
@@ -251,7 +252,9 @@ export default function AssistedInspectionV3({
     const fresh = mapUveyeAlertsToDamages(payload, allFrames, frameImages);
     const saved = initialReviewState?.damages as Damage[] | undefined;
     if (saved && Array.isArray(saved) && saved.length > 0) {
-      setDamages(mergePersistedDamagesWithFreshMap(saved, fresh));
+      setDamages(
+        applyDefaultApprovedForManualDamages(mergePersistedDamagesWithFreshMap(saved, fresh)),
+      );
     } else {
       setDamages(fresh);
     }
@@ -767,7 +770,7 @@ export default function AssistedInspectionV3({
                 x: 50,
                 y: 50,
                 frameId: '__manual_capture__',
-                confirmed: null,
+                confirmed: true,
                 damageName: capturePayload.damageType,
                 captureId: capturePayload.captureId,
                 captureDataUrl: capturePayload.dataUrl,

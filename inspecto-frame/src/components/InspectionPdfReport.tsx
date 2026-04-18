@@ -81,7 +81,8 @@ export async function generateInspectionPdf({
     `Total damages: ${s.totalDamages} (AI + camera / manual)`,
     `By source: ${s.aiRows} AI (pipelines or unspecified)  ·  ${s.manualRows} manual (inspector-added)`,
     `Detection review progress: ${reviewProgressStr}`,
-    `Accuracy (approved ÷ total): ${s.accuracyPctStr}`,
+    `Precision (approved ÷ total): ${s.precisionPctStr}`,
+    `Recall: ${s.recallPctStr}  (100% with no inspector-added rows; else approved AI ÷ (approved AI + manual))`,
     `Approved: ${s.approved}  |  Reject: ${s.rejected}  |  Pending: ${s.pending}`,
     `Marked duplicates: ${s.markedDuplicates}  |  Flagged: ${s.flagged}`,
   ];

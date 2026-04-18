@@ -2,6 +2,14 @@ import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react'
 import { Camera, Image, X, RotateCcw } from 'lucide-react';
 import { humanizeDetectionType } from '@/services/uveyeApi';
 import { UVeye_CATALOG_DAMAGE_CHECK_TYPES } from '@/lib/uveyeCatalogDamageTypes';
+import {
+  CATALOG_AREA_ORDER,
+  indexCatalogByCategory,
+  UNIQUE_PARTS_AND_DAMAGES,
+  type CatalogArea,
+} from '@/lib/partDamageCatalog';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
 
 export const MANUAL_DAMAGE_TYPES = [
   'Scratch',
@@ -63,6 +71,16 @@ export default function CameraCapture({
   const [pendingDataUrl, setPendingDataUrl] = useState<string | null>(null);
   const [selectedPart, setSelectedPart] = useState('');
   const [damageType, setDamageType] = useState<string>(MANUAL_DAMAGE_TYPES[0]);
+  const [useCatalogPicker, setUseCatalogPicker] = useState(false);
+  const [catalogArea, setCatalogArea] = useState<CatalogArea>(CATALOG_AREA_ORDER[0]);
+
+  const { partsByCategory, damagesByCategory } = useMemo(
+    () => indexCatalogByCategory(UNIQUE_PARTS_AND_DAMAGES),
+    [],
+  );
+
+  const catalogParts = partsByCategory.get(catalogArea) ?? [];
+  const catalogDamages = damagesByCategory.get(catalogArea) ?? [];
 
   const damageTypeOptions = useMemo(() => {
     const seen = new Set<string>();
@@ -99,10 +117,38 @@ export default function CameraCapture({
     stopStream();
     setMode('details');
     setPendingDataUrl(dataUrl);
+    setUseCatalogPicker(false);
+    setCatalogArea(CATALOG_AREA_ORDER[0]);
     const suggested =
       suggestedPartName && partNames.includes(suggestedPartName) ? suggestedPartName : '';
     setSelectedPart(suggested || partNames[0] || '');
     setDamageType(MANUAL_DAMAGE_TYPES[0]);
+  };
+
+  const applyVehicleMapDefaults = useCallback(() => {
+    const suggested =
+      suggestedPartName && partNames.includes(suggestedPartName) ? suggestedPartName : '';
+    setSelectedPart(suggested || partNames[0] || '');
+    setDamageType(MANUAL_DAMAGE_TYPES[0]);
+  }, [partNames, suggestedPartName]);
+
+  const applyCatalogDefaultsForArea = useCallback(
+    (area: CatalogArea) => {
+      const parts = partsByCategory.get(area) ?? [];
+      const dmgs = damagesByCategory.get(area) ?? [];
+      setSelectedPart(parts[0] || '');
+      setDamageType(dmgs[0] || MANUAL_DAMAGE_TYPES[0]);
+    },
+    [partsByCategory, damagesByCategory],
+  );
+
+  const onCatalogToggle = (checked: boolean) => {
+    setUseCatalogPicker(checked);
+    if (checked) {
+      applyCatalogDefaultsForArea(catalogArea);
+    } else {
+      applyVehicleMapDefaults();
+    }
   };
 
   const openNativeCameraPicker = () => {
@@ -167,10 +213,17 @@ export default function CameraCapture({
 
   const submitDetails = () => {
     if (!pendingDataUrl || !selectedPart.trim()) return;
-    const resolvedType = damageTypeOptions.includes(damageType)
-      ? damageType
-      : damageTypeOptions[0] || MANUAL_DAMAGE_TYPES[0];
-    const dt = resolvedType.trim() || MANUAL_DAMAGE_TYPES[0];
+    let dt: string;
+    if (useCatalogPicker) {
+      const resolved =
+        catalogDamages.includes(damageType) ? damageType : catalogDamages[0] || MANUAL_DAMAGE_TYPES[0];
+      dt = resolved.trim() || MANUAL_DAMAGE_TYPES[0];
+    } else {
+      const resolvedType = damageTypeOptions.includes(damageType)
+        ? damageType
+        : damageTypeOptions[0] || MANUAL_DAMAGE_TYPES[0];
+      dt = resolvedType.trim() || MANUAL_DAMAGE_TYPES[0];
+    }
     onCapture({
       dataUrl: pendingDataUrl,
       partName: selectedPart.trim(),
@@ -209,49 +262,143 @@ export default function CameraCapture({
               <img src={pendingDataUrl} alt="Captured" className="max-h-full max-w-full object-contain" />
             </div>
 
-            <div>
-              <label htmlFor="camera-capture-part" className="text-xs font-semibold text-foreground block mb-1.5">
-                Car part
-              </label>
-              <select
-                id="camera-capture-part"
-                value={selectedPart}
-                onChange={(e) => setSelectedPart(e.target.value)}
-                className="w-full px-3 py-2.5 text-sm rounded-lg border border-input bg-background text-foreground"
-              >
-                {partNames.length === 0 ? (
-                  <option value="">No parts configured</option>
-                ) : (
-                  partNames.map((name) => (
-                    <option key={name} value={name}>
-                      {name}
-                    </option>
-                  ))
-                )}
-              </select>
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/20 px-3 py-2.5">
+              <div className="min-w-0">
+                <Label htmlFor="camera-catalog-picker" className="text-xs font-semibold text-foreground">
+                  Catalog picker
+                </Label>
+                <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">
+                  Exterior, interior, mechanical, or structural frame — then part and damage for that area.
+                </p>
+              </div>
+              <Switch
+                id="camera-catalog-picker"
+                checked={useCatalogPicker}
+                onCheckedChange={onCatalogToggle}
+                className="shrink-0"
+              />
             </div>
 
-            <div>
-              <label htmlFor="camera-capture-damage" className="text-xs font-semibold text-foreground block mb-1.5">
-                Damage type
-              </label>
-              <select
-                id="camera-capture-damage"
-                value={damageTypeOptions.includes(damageType) ? damageType : damageTypeOptions[0]}
-                onChange={(e) => setDamageType(e.target.value)}
-                className="w-full px-3 py-2.5 text-sm rounded-lg border border-input bg-background text-foreground"
-              >
-                {damageTypeOptions.map((t) => (
-                  <option key={t} value={t}>
-                    {t}
-                  </option>
-                ))}
-              </select>
-              <p className="text-[11px] text-muted-foreground mt-1.5">
-                Quick picks first, then the full UVeye body / tire / undercarriage damage list, then any
-                extra types from this scan.
-              </p>
-            </div>
+            {useCatalogPicker ? (
+              <>
+                <div>
+                  <label
+                    htmlFor="camera-capture-area"
+                    className="text-xs font-semibold text-foreground block mb-1.5"
+                  >
+                    Area
+                  </label>
+                  <select
+                    id="camera-capture-area"
+                    value={catalogArea}
+                    onChange={(e) => {
+                      const next = e.target.value as CatalogArea;
+                      setCatalogArea(next);
+                      applyCatalogDefaultsForArea(next);
+                    }}
+                    className="w-full px-3 py-2.5 text-sm rounded-lg border border-input bg-background text-foreground"
+                  >
+                    {CATALOG_AREA_ORDER.map((area) => (
+                      <option key={area} value={area}>
+                        {area === 'Frame' ? 'Frame (structural)' : area}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label htmlFor="camera-capture-part" className="text-xs font-semibold text-foreground block mb-1.5">
+                    Part (this area)
+                  </label>
+                  <select
+                    id="camera-capture-part"
+                    value={catalogParts.includes(selectedPart) ? selectedPart : catalogParts[0] || ''}
+                    onChange={(e) => setSelectedPart(e.target.value)}
+                    className="w-full px-3 py-2.5 text-sm rounded-lg border border-input bg-background text-foreground"
+                  >
+                    {catalogParts.length === 0 ? (
+                      <option value="">No parts in catalog for this area</option>
+                    ) : (
+                      catalogParts.map((name) => (
+                        <option key={name} value={name}>
+                          {name}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </div>
+
+                <div>
+                  <label htmlFor="camera-capture-damage" className="text-xs font-semibold text-foreground block mb-1.5">
+                    Damage (this area)
+                  </label>
+                  <select
+                    id="camera-capture-damage"
+                    value={
+                      catalogDamages.includes(damageType) ? damageType : catalogDamages[0] || MANUAL_DAMAGE_TYPES[0]
+                    }
+                    onChange={(e) => setDamageType(e.target.value)}
+                    className="w-full px-3 py-2.5 text-sm rounded-lg border border-input bg-background text-foreground"
+                  >
+                    {catalogDamages.length === 0 ? (
+                      <option value="">{MANUAL_DAMAGE_TYPES[0]}</option>
+                    ) : (
+                      catalogDamages.map((t) => (
+                        <option key={t} value={t}>
+                          {t}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </div>
+              </>
+            ) : (
+              <>
+                <div>
+                  <label htmlFor="camera-capture-part" className="text-xs font-semibold text-foreground block mb-1.5">
+                    Car part
+                  </label>
+                  <select
+                    id="camera-capture-part"
+                    value={selectedPart}
+                    onChange={(e) => setSelectedPart(e.target.value)}
+                    className="w-full px-3 py-2.5 text-sm rounded-lg border border-input bg-background text-foreground"
+                  >
+                    {partNames.length === 0 ? (
+                      <option value="">No parts configured</option>
+                    ) : (
+                      partNames.map((name) => (
+                        <option key={name} value={name}>
+                          {name}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </div>
+
+                <div>
+                  <label htmlFor="camera-capture-damage" className="text-xs font-semibold text-foreground block mb-1.5">
+                    Damage type
+                  </label>
+                  <select
+                    id="camera-capture-damage"
+                    value={damageTypeOptions.includes(damageType) ? damageType : damageTypeOptions[0]}
+                    onChange={(e) => setDamageType(e.target.value)}
+                    className="w-full px-3 py-2.5 text-sm rounded-lg border border-input bg-background text-foreground"
+                  >
+                    {damageTypeOptions.map((t) => (
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-[11px] text-muted-foreground mt-1.5">
+                    Quick picks first, then the full UVeye body / tire / undercarriage damage list, then any
+                    extra types from this scan.
+                  </p>
+                </div>
+              </>
+            )}
           </div>
 
           <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-border shrink-0 bg-card">

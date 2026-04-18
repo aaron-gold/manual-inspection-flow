@@ -44,6 +44,16 @@ export interface Damage {
   captureImageUrl?: string;
 }
 
+/**
+ * Inspector-added rows (`ai === false`, e.g. camera / missed damage) are treated as already validated:
+ * default to approved so they do not sit in the pending review queue.
+ */
+export function applyDefaultApprovedForManualDamages(damages: Damage[]): Damage[] {
+  return damages.map((d) =>
+    d.ai === false && d.confirmed == null ? { ...d, confirmed: true } : d,
+  );
+}
+
 /** Internal frame ids (manual capture, tests) that must not drive UVeye frame lists. */
 export function isSyntheticDamageFrameId(frameId: string | undefined): boolean {
   return typeof frameId === 'string' && frameId.startsWith('__');
