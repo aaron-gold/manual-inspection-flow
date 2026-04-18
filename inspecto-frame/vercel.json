@@ -1,6 +1,0 @@
-{
-  "bunVersion": "1.0.0",
-  "rewrites": [
-    { "source": "/(.*)", "destination": "/index.html" }
-  ]
-}
