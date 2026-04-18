@@ -6,6 +6,7 @@ import {
   areaLabelForDamageReport,
   CAR_PARTS,
   partNameMatches,
+  partWalkRankForPartName,
   type Damage,
 } from '@/lib/assistedInspectionModel';
 import {
@@ -31,12 +32,15 @@ export type DamageReportMeta = {
 
 export type DamageReportTableRow = {
   area: string;
-  module: string;
+  /** AI pipeline (Atlas, Artemis, …) or Manual for inspector-added / camera rows. */
+  source: string;
+  status: string;
   part: string;
   damage: string;
   diagonalMm: string;
   widthMm: string;
   heightMm: string;
+  notes: string;
 };
 
 function escapeCsvCell(s: string): string {
@@ -49,15 +53,90 @@ function fmtMm(n: number | undefined): string {
   return String(Math.round(n * 10) / 10);
 }
 
-function moduleLabelForDamage(d: Damage): string {
-  if (d.ai === false) return 'Manual';
+function hasCaptureEvidence(d: Damage): boolean {
+  const cid = d.captureId?.trim();
+  return Boolean(cid || d.captureDataUrl || d.captureImageUrl);
+}
+
+/** AI / pipeline label or Manual for inspector-added rows (CSV, PDF, preview). Never blank for AI rows. */
+export function sourceLabelForDamage(d: Damage): string {
+  if (d.ai === false) return hasCaptureEvidence(d) ? 'Manual · camera' : 'Manual';
   const m = d.inspectionModule;
   if (m && INSPECTION_MODULE_LABELS[m]) return INSPECTION_MODULE_LABELS[m];
-  return '';
+  return 'AI (UVeye)';
 }
 
 function damageDisplayLabel(d: Damage): string {
   return [d.damageName, d.type].filter(Boolean).join(' — ') || d.type;
+}
+
+/**
+ * Match daily-style rollups: any wording that includes "dent" → Dent, "scratch" → Scratch; otherwise unchanged.
+ * Dent is checked before scratch so mixed phrases classify as Dent.
+ */
+export function generalizeDamageTypeText(raw: string): string {
+  const t = String(raw ?? '').trim();
+  if (!t) return '';
+  const lower = t.toLowerCase();
+  if (lower.includes('dent')) return 'Dent';
+  if (lower.includes('scratch')) return 'Scratch';
+  return t;
+}
+
+/** Combined display name for a row, then dent/scratch generalization (exports / PDF). */
+export function damageLabelForExport(d: Damage): string {
+  return generalizeDamageTypeText(damageDisplayLabel(d));
+}
+
+export function reviewStatusForDamage(d: Damage): string {
+  if (d.confirmed === true) return 'Approved';
+  if (d.confirmed === false) return 'Reject';
+  return 'Pending';
+}
+
+function notesForDamage(d: Damage): string {
+  const bits: string[] = [];
+  if (d.isDuplicate) bits.push('Duplicate');
+  if (d.flagged) bits.push('Flagged');
+  return bits.join('; ');
+}
+
+/** Counts for summary UI, PDF intro, and CSV header metrics (AI + manual rows). */
+export function damageInspectionSummaryCounts(damages: Damage[]): {
+  totalDamages: number;
+  approved: number;
+  rejected: number;
+  pending: number;
+  markedDuplicates: number;
+  flagged: number;
+  /** Rows from UVeye / AI (`ai !== false`). */
+  aiRows: number;
+  /** Inspector-added rows (`ai === false`), incl. camera-linked. */
+  manualRows: number;
+  /** Percent string e.g. `89.5%`, or `—` when there are no rows. */
+  accuracyPctStr: string;
+} {
+  const totalDamages = damages.length;
+  const approved = damages.filter((d) => d.confirmed === true).length;
+  const rejected = damages.filter((d) => d.confirmed === false).length;
+  const pending = damages.filter((d) => d.confirmed == null).length;
+  const markedDuplicates = damages.filter((d) => d.isDuplicate).length;
+  const flagged = damages.filter((d) => d.flagged).length;
+  const manualRows = damages.filter((d) => d.ai === false).length;
+  const aiRows = totalDamages - manualRows;
+  const accuracyPctStr =
+    totalDamages > 0 ? `${Math.round((approved / totalDamages) * 1000) / 10}%` : '—';
+  return {
+    totalDamages,
+    approved,
+    rejected,
+    pending,
+    markedDuplicates,
+    flagged,
+    aiRows,
+    manualRows,
+    accuracyPctStr,
+  };
 }
 
 /** Same order as the vehicle map: Front → Left → Top → Right → Rear → Undercarriage → Interior. */
@@ -69,8 +148,9 @@ function areaOrderIndexForPart(partName: string): number {
 }
 
 function partOrderIndexForPart(partName: string): number {
-  const i = CAR_PARTS.findIndex((cp) => partNameMatches(cp.name, partName));
-  return i === -1 ? 9999 : i;
+  const p = CAR_PARTS.find((cp) => partNameMatches(cp.name, partName));
+  if (!p) return 99999;
+  return partWalkRankForPartName(p.name);
 }
 
 function compareDamagesForReport(a: Damage, b: Damage): number {
@@ -101,12 +181,14 @@ export function buildDamageReportData(
 
   const rows: DamageReportTableRow[] = sortedDamages.map((d) => ({
     area: areaLabelForDamageReport(d.part),
-    module: moduleLabelForDamage(d),
+    source: sourceLabelForDamage(d),
+    status: reviewStatusForDamage(d),
     part: d.part,
-    damage: damageDisplayLabel(d),
+    damage: damageLabelForExport(d),
     diagonalMm: fmtMm(d.sizeDiagonalMm),
     widthMm: fmtMm(d.sizeWidthMm),
     heightMm: fmtMm(d.sizeHeightMm),
+    notes: notesForDamage(d),
   }));
 
   return {
@@ -129,16 +211,28 @@ export function buildDamageReportCsv(
   lines.push(['Year', escapeCsvCell(meta.year)].join(','));
   if (meta.inspectionId) lines.push(['Inspection ID', escapeCsvCell(meta.inspectionId)].join(','));
   lines.push(['UVeye inspection link', escapeCsvCell(meta.uveyeLink)].join(','));
+  const s = damageInspectionSummaryCounts(damages);
+  lines.push(['Total damages', escapeCsvCell(String(s.totalDamages))].join(','));
+  lines.push(['Approved count', escapeCsvCell(String(s.approved))].join(','));
+  lines.push(['Reject count', escapeCsvCell(String(s.rejected))].join(','));
+  lines.push(['Pending count', escapeCsvCell(String(s.pending))].join(','));
+  lines.push(['Accuracy (approved ÷ total damages)', escapeCsvCell(s.accuracyPctStr)].join(','));
+  lines.push(['Marked duplicates', escapeCsvCell(String(s.markedDuplicates))].join(','));
+  lines.push(['Flagged', escapeCsvCell(String(s.flagged))].join(','));
+  lines.push(['AI-sourced rows', escapeCsvCell(String(s.aiRows))].join(','));
+  lines.push(['Manual rows', escapeCsvCell(String(s.manualRows))].join(','));
   lines.push('');
   lines.push(
     [
       'Area',
-      'Module',
+      'Source',
+      'Status',
       'Car part',
       'Damage',
       'Diagonal (mm)',
       'Width (mm)',
       'Height (mm)',
+      'Notes',
     ]
       .map(escapeCsvCell)
       .join(','),
@@ -148,12 +242,14 @@ export function buildDamageReportCsv(
     lines.push(
       [
         escapeCsvCell(r.area),
-        escapeCsvCell(r.module),
+        escapeCsvCell(r.source),
+        escapeCsvCell(r.status),
         escapeCsvCell(r.part),
         escapeCsvCell(r.damage),
         escapeCsvCell(r.diagonalMm),
         escapeCsvCell(r.widthMm),
         escapeCsvCell(r.heightMm),
+        escapeCsvCell(r.notes),
       ].join(','),
     );
   }

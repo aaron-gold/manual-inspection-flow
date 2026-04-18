@@ -1,29 +1,20 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { appendUveyeApiKeyToImageUrl, isUveyeApiImageUrl } from '@/services/uveyeApi';
-
-interface Damage {
-  id: number;
-  part: string;
-  type: string;
-  severity: string;
-  ai: boolean;
-  confirmed?: boolean | null;
-  isDuplicate?: boolean;
-  flagged?: boolean;
-}
+import type { Damage } from '@/lib/assistedInspectionModel';
+import { buildDamageReportData, damageInspectionSummaryCounts } from '@/lib/damageReportCsv';
+import { appendUveyeApiKeyToImageUrl, isUveyeApiImageUrl, type UveyeInspectionResponse } from '@/services/uveyeApi';
 
 interface PdfParams {
   vehicleLabel: string;
   damages: Damage[];
-  reviewedParts: Set<string>;
-  totalParts: number;
+  payload: UveyeInspectionResponse;
   capturedPhotos?: {
     partName: string;
     damageType: string;
     dataUrl?: string;
     imageUrl?: string;
     timestamp: Date;
+    captureId?: string;
   }[];
 }
 
@@ -48,8 +39,7 @@ async function photoToDataUrl(photo: {
 export async function generateInspectionPdf({
   vehicleLabel,
   damages,
-  reviewedParts,
-  totalParts,
+  payload,
   capturedPhotos = [],
 }: PdfParams) {
   const doc = new jsPDF();
@@ -73,16 +63,13 @@ export async function generateInspectionPdf({
   doc.setTextColor(0);
   y += 12;
 
-  // Summary stats
-  const confirmed = damages.filter(d => d.confirmed === true).length;
-  const dismissed = damages.filter(d => d.confirmed === false).length;
-  const pending = damages.filter(d => d.confirmed == null).length;
-  const dup = damages.filter(d => d.isDuplicate).length;
-  const flagged = damages.filter(d => d.flagged).length;
-  const n = damages.length;
-  const accuracyStr =
-    n > 0 ? `${Math.round((confirmed / n) * 1000) / 10}% (confirmed ÷ total; total includes AI + manual)` : '—';
-
+  // Summary stats (aligned with summary page + CSV header)
+  const s = damageInspectionSummaryCounts(damages);
+  const decided = s.approved + s.rejected;
+  const reviewProgressStr =
+    s.totalDamages > 0
+      ? `${Math.round((decided / s.totalDamages) * 1000) / 10}% (${decided} of ${s.totalDamages} approve or reject — includes camera / manual rows)`
+      : '—';
   doc.setFontSize(11);
   doc.setFont('helvetica', 'bold');
   doc.text('Summary', 14, y);
@@ -91,11 +78,12 @@ export async function generateInspectionPdf({
   doc.setFontSize(9);
   doc.setFont('helvetica', 'normal');
   const stats = [
-    `Parts Reviewed: ${reviewedParts.size} / ${totalParts}`,
-    `Total Detections: ${damages.length} (AI + manual)`,
-    `Accuracy: ${accuracyStr}`,
-    `Confirmed: ${confirmed}  |  Dismissed: ${dismissed}  |  Pending: ${pending}`,
-    `Marked duplicate: ${dup}  |  Flagged: ${flagged}`,
+    `Total damages: ${s.totalDamages} (AI + camera / manual)`,
+    `By source: ${s.aiRows} AI (pipelines or unspecified)  ·  ${s.manualRows} manual (inspector-added)`,
+    `Detection review progress: ${reviewProgressStr}`,
+    `Accuracy (approved ÷ total): ${s.accuracyPctStr}`,
+    `Approved: ${s.approved}  |  Reject: ${s.rejected}  |  Pending: ${s.pending}`,
+    `Marked duplicates: ${s.markedDuplicates}  |  Flagged: ${s.flagged}`,
   ];
   stats.forEach(s => { doc.text(s, 14, y); y += 5; });
   y += 5;
@@ -106,42 +94,58 @@ export async function generateInspectionPdf({
   doc.text('Damage Details', 14, y);
   y += 4;
 
-  const tableData = damages.map(d => [
-    d.part,
-    d.type,
-    d.severity,
-    d.ai ? 'AI' : 'Manual',
-    d.confirmed === true ? 'Confirmed' : d.confirmed === false ? 'Dismissed' : 'Pending',
-    [d.isDuplicate ? 'Dup' : '', d.flagged ? 'Flag' : ''].filter(Boolean).join(' ') || '—',
+  const { rows } = buildDamageReportData(payload, damages);
+  const tableData = rows.map((r) => [
+    r.area,
+    r.source,
+    r.status,
+    r.part,
+    r.damage,
+    r.notes.trim() ? r.notes : '—',
   ]);
 
   autoTable(doc, {
     startY: y,
-    head: [['Part', 'Type', 'Severity', 'Source', 'Status', 'Notes']],
+    head: [['Area', 'Source', 'Status', 'Part', 'Damage', 'Notes']],
     body: tableData,
     theme: 'striped',
     headStyles: { fillColor: [60, 60, 60], fontSize: 8 },
-    bodyStyles: { fontSize: 8 },
+    bodyStyles: { fontSize: 8, overflow: 'linebreak' },
     margin: { left: 14, right: 14 },
+    /** Keep Source readable (was often blank before module fallback; column must not collapse). */
+    columnStyles: {
+      0: { cellWidth: 22 },
+      1: { cellWidth: 36 },
+      2: { cellWidth: 20 },
+      3: { cellWidth: 28 },
+      4: { cellWidth: 32 },
+      5: { cellWidth: 'auto' },
+    },
   });
 
   const lastY = (doc as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY;
   y = (typeof lastY === "number" ? lastY : y) + 10;
 
-  // Photos section
-  if (capturedPhotos.length > 0) {
+  const appendixPhotos = capturedPhotos.filter((p) => {
+    const cid = typeof p.captureId === 'string' ? p.captureId.trim() : '';
+    if (!cid) return true;
+    return !damages.some((d) => d.captureId === cid);
+  });
+
+  // Photos section (legacy captures not linked to a damage row)
+  if (appendixPhotos.length > 0) {
     if (y > 240) { doc.addPage(); y = 20; }
     doc.setFontSize(11);
     doc.setFont('helvetica', 'bold');
-    doc.text('Captured Photos', 14, y);
+    doc.text('Additional captures (not linked to a detection row)', 14, y);
     y += 6;
 
     const imgW = 55;
     const imgH = 40;
     let x = 14;
 
-    for (let i = 0; i < capturedPhotos.length; i++) {
-      const photo = capturedPhotos[i];
+    for (let i = 0; i < appendixPhotos.length; i++) {
+      const photo = appendixPhotos[i];
       if (x + imgW > pageW - 14) {
         x = 14;
         y += imgH + 12;

@@ -1,6 +1,21 @@
-import React, { useMemo, useState } from 'react';
-import { CheckCircle, XCircle, AlertTriangle, Download, ArrowLeft, Camera, Clock, ChevronDown, Flag, Copy, Filter, Percent } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  CheckCircle,
+  XCircle,
+  AlertTriangle,
+  Download,
+  ArrowLeft,
+  Camera,
+  Clock,
+  ChevronDown,
+  Flag,
+  Copy,
+  Filter,
+  Percent,
+  Target,
+} from 'lucide-react';
 import { generateInspectionPdf } from './InspectionPdfReport';
+import type { UveyeInspectionResponse } from '@/services/uveyeApi';
 import {
   Select,
   SelectContent,
@@ -8,6 +23,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { cn } from '@/lib/utils';
+import { damageInspectionSummaryCounts } from '@/lib/damageReportCsv';
 
 interface Damage {
   id: number;
@@ -23,13 +40,15 @@ interface Damage {
   flagged?: boolean;
   damageName?: string;
   reportId?: string;
+  captureId?: string;
+  captureDataUrl?: string;
+  captureImageUrl?: string;
 }
 
 interface InspectionSummaryProps {
   vehicleLabel: string;
   damages: Damage[];
-  reviewedParts: Set<string>;
-  totalParts: number;
+  payload: UveyeInspectionResponse;
   onBack: () => void;
   capturedPhotos?: {
     partName: string;
@@ -37,6 +56,7 @@ interface InspectionSummaryProps {
     dataUrl?: string;
     imageUrl?: string;
     timestamp: Date;
+    captureId?: string;
   }[];
 }
 
@@ -81,22 +101,36 @@ const FILTER_ORDER: SummaryFilter[] = ['all', 'reviewed', 'pending', 'approved',
 export default function InspectionSummary({
   vehicleLabel,
   damages,
-  reviewedParts,
-  totalParts,
+  payload,
   onBack,
   capturedPhotos = [],
 }: InspectionSummaryProps) {
   const [listFilter, setListFilter] = useState<SummaryFilter>('all');
+  /** Part name → accordion open; empty means all closed until user expands. */
+  const [expandedParts, setExpandedParts] = useState<Record<string, boolean>>({});
 
-  const confirmed = damages.filter(d => d.confirmed === true);
-  const dismissed = damages.filter(d => d.confirmed === false);
+  const approved = damages.filter(d => d.confirmed === true);
+  const rejected = damages.filter(d => d.confirmed === false);
   const pending = damages.filter(d => d.confirmed == null);
+  /** Every detection row in this inspection (AI + manual / camera). */
   const totalDamages = damages.length;
-  /** AI findings plus any rows the user added manually — same list as Total Detections. */
-  const accuracyPct =
-    totalDamages > 0 ? Math.round((confirmed.length / totalDamages) * 1000) / 10 : null;
-  const duplicates = damages.filter(d => d.isDuplicate);
+  const decidedCount = approved.length + rejected.length;
+  const reviewProgressPct =
+    totalDamages > 0 ? Math.round((decidedCount / totalDamages) * 1000) / 10 : null;
+  const unreviewedDamagesCount = pending.length;
   const flagged = damages.filter(d => d.flagged);
+  const summaryMetrics = useMemo(() => damageInspectionSummaryCounts(damages), [damages]);
+
+  const unlinkedCaptures = useMemo(() => {
+    const linked = new Set(
+      damages.map((d) => d.captureId).filter((id): id is string => Boolean(id?.trim())),
+    );
+    return capturedPhotos.filter((p) => {
+      const cid = p.captureId?.trim();
+      if (!cid) return true;
+      return !linked.has(cid);
+    });
+  }, [damages, capturedPhotos]);
 
   const filteredForList = useMemo(
     () => damages.filter(d => matchesSummaryFilter(d, listFilter)),
@@ -110,20 +144,25 @@ export default function InspectionSummary({
     }, {});
   }, [filteredForList]);
 
-  const partNames = Object.keys(byPart).sort((a, b) => a.localeCompare(b));
+  const partNames = useMemo(() => Object.keys(byPart).sort((a, b) => a.localeCompare(b)), [byPart]);
 
-  const bySeverity = {
-    High: damages.filter(d => d.severity === 'High').length,
-    Medium: damages.filter(d => d.severity === 'Medium').length,
-    Low: damages.filter(d => d.severity === 'Low').length,
+  useEffect(() => {
+    setExpandedParts({});
+  }, [listFilter]);
+
+  const expandAllParts = () => {
+    setExpandedParts(Object.fromEntries(partNames.map((p) => [p, true])));
+  };
+
+  const collapseAllParts = () => {
+    setExpandedParts(Object.fromEntries(partNames.map((p) => [p, false])));
   };
 
   const handleDownloadPdf = () => {
     void generateInspectionPdf({
       vehicleLabel,
       damages,
-      reviewedParts,
-      totalParts,
+      payload,
       capturedPhotos,
     });
   };
@@ -138,7 +177,7 @@ export default function InspectionSummary({
           </button>
           <div>
             <h1 className="font-bold text-base">{vehicleLabel}</h1>
-            <p className="text-xs text-muted-foreground">Inspection Summary Report</p>
+            <p className="text-xs text-muted-foreground">Summary &amp; stats</p>
           </div>
         </div>
         <button
@@ -151,74 +190,68 @@ export default function InspectionSummary({
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-5 space-y-5">
-        {/* Stats cards — total count includes AI detections and user-added damages */}
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
-          <StatCard label="Total Detections" value={totalDamages} icon={<AlertTriangle size={16} />} color="text-foreground" hint="AI + manual" />
-          <StatCard label="Confirmed" value={confirmed.length} icon={<CheckCircle size={16} />} color="text-primary" />
-          <StatCard label="Dismissed" value={dismissed.length} icon={<XCircle size={16} />} color="text-destructive" />
-          <StatCard label="Pending Review" value={pending.length} icon={<Clock size={16} />} color="text-muted-foreground" />
-          <StatCard
-            label="Accuracy"
-            value={accuracyPct === null ? '—' : `${accuracyPct}%`}
-            icon={<Percent size={16} />}
-            color="text-primary"
-            hint="Confirmed ÷ total detections"
-          />
+        {/* Stats: row 1 — totals & review mix; row 2 — progress & duplicates */}
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
+            <StatCard
+              label="Total detections"
+              value={totalDamages}
+              icon={<AlertTriangle size={16} />}
+              color="text-foreground"
+              hint="All rows: AI + manual / camera"
+            />
+            <StatCard label="Approved" value={approved.length} icon={<CheckCircle size={16} />} color="text-primary" />
+            <StatCard label="Reject" value={rejected.length} icon={<XCircle size={16} />} color="text-destructive" />
+            <StatCard
+              label="Unreviewed"
+              value={unreviewedDamagesCount}
+              icon={<Clock size={16} />}
+              color={unreviewedDamagesCount > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground'}
+              hint={
+                totalDamages === 0
+                  ? 'No detections'
+                  : unreviewedDamagesCount === 0
+                    ? 'Every detection has approve or reject'
+                    : `Still need approve or reject (${unreviewedDamagesCount} of ${totalDamages})`
+              }
+            />
+            <StatCard
+              label="Accuracy"
+              value={summaryMetrics.accuracyPctStr}
+              icon={<Target size={16} />}
+              color="text-foreground"
+              hint={
+                totalDamages === 0
+                  ? 'No rows to score'
+                  : `${summaryMetrics.approved} approved ÷ ${summaryMetrics.totalDamages} total`
+              }
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3 sm:max-w-xl">
+            <StatCard
+              label="Review progress"
+              value={reviewProgressPct === null ? '—' : `${reviewProgressPct}%`}
+              icon={<Percent size={16} />}
+              color="text-primary"
+              hint={`${decidedCount} of ${totalDamages} approve or reject`}
+            />
+            <StatCard
+              label="Duplicates"
+              value={summaryMetrics.markedDuplicates}
+              icon={<Copy size={16} />}
+              color={summaryMetrics.markedDuplicates > 0 ? 'text-blue-600 dark:text-blue-400' : 'text-muted-foreground'}
+              hint="Rows marked duplicate"
+            />
+          </div>
         </div>
 
-        {(duplicates.length > 0 || flagged.length > 0) && (
+        {flagged.length > 0 && (
           <div className="flex flex-wrap gap-3">
-            {duplicates.length > 0 && (
-              <span className="inline-flex items-center gap-2 text-sm font-semibold rounded-xl border-2 border-blue-600 bg-blue-600 text-white px-4 py-2.5 shadow-sm">
-                <Copy size={18} className="shrink-0 opacity-95" aria-hidden />
-                {duplicates.length} marked duplicate{duplicates.length !== 1 ? 's' : ''}
-              </span>
-            )}
-            {flagged.length > 0 && (
-              <span className="inline-flex items-center gap-1.5 text-xs font-medium rounded-full border border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-200 px-3 py-1.5">
-                <Flag size={12} /> {flagged.length} flagged
-              </span>
-            )}
+            <span className="inline-flex items-center gap-1.5 text-xs font-medium rounded-full border border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-200 px-3 py-1.5">
+              <Flag size={12} /> {flagged.length} flagged
+            </span>
           </div>
         )}
-
-        {/* Progress */}
-        <div className="bg-card rounded-xl border border-border p-4">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-sm font-semibold text-foreground">Parts Reviewed</span>
-            <span className="text-sm font-bold text-primary">{reviewedParts.size} / {totalParts}</span>
-          </div>
-          <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
-            <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${(reviewedParts.size / totalParts) * 100}%` }} />
-          </div>
-        </div>
-
-        {/* Severity — compact summary */}
-        <div className="bg-card rounded-xl border border-border p-4">
-          <h3 className="text-sm font-semibold text-foreground mb-3">Severity (AI)</h3>
-          <p className="text-xs text-muted-foreground mb-3">
-            Counts reflect model-assigned severity from the inspection payload.
-          </p>
-          <div className="flex flex-wrap gap-2">
-            {(['High', 'Medium', 'Low'] as const).map(sev => (
-              <div
-                key={sev}
-                className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm border ${
-                  sev === 'High'
-                    ? 'border-destructive/30 bg-destructive/5'
-                    : sev === 'Medium'
-                      ? 'border-yellow-500/30 bg-yellow-500/5'
-                      : 'border-border bg-muted/40'
-                }`}
-              >
-                <span className={`font-bold tabular-nums ${sev === 'High' ? 'text-destructive' : sev === 'Medium' ? 'text-yellow-600 dark:text-yellow-400' : 'text-muted-foreground'}`}>
-                  {bySeverity[sev]}
-                </span>
-                <span className="text-muted-foreground">{sev}</span>
-              </div>
-            ))}
-          </div>
-        </div>
 
         {/* Damages by part — collapsible, filterable */}
         <div className="bg-card rounded-xl border border-border p-4">
@@ -230,23 +263,45 @@ export default function InspectionSummary({
                   Showing {filteredForList.length} of {totalDamages} detection{totalDamages !== 1 ? 's' : ''}
                 </p>
               ) : (
-                <p className="text-xs text-muted-foreground mt-1">Damage type and AI labels from the inspection payload.</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Area, part, damage type, source (AI vs Manual), and review status. Camera captures appear as Manual rows.
+                </p>
               )}
             </div>
-            <div className="flex items-center gap-2 shrink-0 w-full sm:w-[min(100%,280px)]">
-              <Filter size={14} className="text-muted-foreground shrink-0" aria-hidden />
-              <Select value={listFilter} onValueChange={v => setListFilter(v as SummaryFilter)}>
-                <SelectTrigger className="h-9 text-xs">
-                  <SelectValue placeholder="Filter detections" />
-                </SelectTrigger>
-                <SelectContent>
-                  {FILTER_ORDER.map(key => (
-                    <SelectItem key={key} value={key} className="text-xs">
-                      {FILTER_LABELS[key]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <div className="flex flex-col gap-2 shrink-0 w-full sm:flex-row sm:items-center sm:justify-end sm:gap-2 sm:w-auto">
+              <div className="flex items-center gap-1.5 justify-end sm:justify-start">
+                <button
+                  type="button"
+                  onClick={expandAllParts}
+                  disabled={partNames.length === 0}
+                  className="rounded-md border border-border bg-background px-2.5 py-1.5 text-[11px] font-medium text-foreground hover:bg-muted/70 disabled:opacity-40 disabled:pointer-events-none"
+                >
+                  Expand all
+                </button>
+                <button
+                  type="button"
+                  onClick={collapseAllParts}
+                  disabled={partNames.length === 0}
+                  className="rounded-md border border-border bg-background px-2.5 py-1.5 text-[11px] font-medium text-foreground hover:bg-muted/70 disabled:opacity-40 disabled:pointer-events-none"
+                >
+                  Collapse all
+                </button>
+              </div>
+              <div className="flex items-center gap-2 w-full sm:w-[min(100%,220px)]">
+                <Filter size={14} className="text-muted-foreground shrink-0" aria-hidden />
+                <Select value={listFilter} onValueChange={v => setListFilter(v as SummaryFilter)}>
+                  <SelectTrigger className="h-9 text-xs">
+                    <SelectValue placeholder="Filter detections" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {FILTER_ORDER.map(key => (
+                      <SelectItem key={key} value={key} className="text-xs">
+                        {FILTER_LABELS[key]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
           </div>
           {totalDamages === 0 ? (
@@ -255,22 +310,38 @@ export default function InspectionSummary({
             <p className="text-sm text-muted-foreground">No detections match this filter.</p>
           ) : (
             <div className="space-y-1">
-              {partNames.map(part => (
-                <CollapsiblePart key={part} part={part} dmgs={byPart[part]} />
+              {partNames.map((part) => (
+                <CollapsiblePart
+                  key={part}
+                  part={part}
+                  dmgs={byPart[part]}
+                  open={expandedParts[part] ?? false}
+                  onOpenChange={(next) =>
+                    setExpandedParts((prev) => ({
+                      ...prev,
+                      [part]: next,
+                    }))
+                  }
+                />
               ))}
             </div>
           )}
         </div>
 
-        {/* Captured Photos */}
-        {capturedPhotos.length > 0 && (
+        {/* Older captures saved before they were linked as detection rows */}
+        {unlinkedCaptures.length > 0 && (
           <div className="bg-card rounded-xl border border-border p-4">
-            <h3 className="text-sm font-semibold text-foreground mb-3 flex items-center gap-2"><Camera size={14} /> Captured Photos ({capturedPhotos.length})</h3>
+            <h3 className="text-sm font-semibold text-foreground mb-1 flex items-center gap-2">
+              <Camera size={14} /> Additional captures ({unlinkedCaptures.length})
+            </h3>
+            <p className="text-xs text-muted-foreground mb-3">
+              These photos are not yet tied to a detection row. New camera saves appear in the list above as Manual source.
+            </p>
             <div className="grid grid-cols-3 gap-2">
-              {capturedPhotos.map((photo, i) => (
+              {unlinkedCaptures.map((photo, i) => (
                 <div key={i} className="relative rounded-lg overflow-hidden border border-border aspect-video">
                   <img
-                    src={photo.dataUrl ?? photo.imageUrl ?? ""}
+                    src={photo.dataUrl ?? photo.imageUrl ?? ''}
                     alt={photo.partName}
                     className="w-full h-full object-cover"
                   />
@@ -288,41 +359,77 @@ export default function InspectionSummary({
   );
 }
 
-function CollapsiblePart({ part, dmgs }: { part: string; dmgs: Damage[] }) {
-  const [open, setOpen] = useState(false);
+function CollapsiblePart({
+  part,
+  dmgs,
+  open,
+  onOpenChange,
+}: {
+  part: string;
+  dmgs: Damage[];
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
   return (
     <div className="border border-border rounded-lg overflow-hidden">
       <button
         type="button"
-        onClick={() => setOpen(!open)}
+        onClick={() => onOpenChange(!open)}
         className="w-full flex items-center justify-between gap-2 px-3 py-2.5 text-left hover:bg-muted/50 transition-colors"
       >
         <span className="flex items-center gap-2 min-w-0">
-          <ChevronDown size={14} className={`shrink-0 text-muted-foreground transition-transform ${open ? '' : '-rotate-90'}`} />
+          <ChevronDown
+            size={14}
+            className={`shrink-0 text-muted-foreground transition-transform ${open ? '' : '-rotate-90'}`}
+          />
           <span className="text-sm font-semibold text-foreground truncate">{part}</span>
         </span>
-        <span className="text-xs bg-destructive/10 text-destructive px-2 py-0.5 rounded-full font-medium shrink-0">{dmgs.length}</span>
+        <span className="text-xs bg-destructive/10 text-destructive px-2 py-0.5 rounded-full font-medium shrink-0">
+          {dmgs.length}
+        </span>
       </button>
       {open && (
         <div className="px-3 pb-3 pt-0 border-t border-border/60 bg-muted/20 space-y-1.5">
-          {dmgs.map(d => (
-            <div key={d.id} className="flex items-start justify-between gap-2 text-xs rounded-md bg-background/80 px-2 py-1.5 border border-border/50">
-              <div className="min-w-0">
+          {dmgs.map((d) => (
+            <div
+              key={d.id}
+              className={cn(
+                'flex items-start justify-between gap-2 text-xs rounded-md px-2 py-1.5 border',
+                d.ai
+                  ? 'bg-background/80 border-border/50'
+                  : 'bg-sky-50 border-sky-200/90 dark:bg-sky-950/40 dark:border-sky-800/80',
+              )}
+            >
+              {(d.captureDataUrl || d.captureImageUrl) && (
+                <div className="shrink-0 w-14 h-14 rounded-md overflow-hidden border border-border bg-muted">
+                  <img
+                    src={d.captureDataUrl ?? d.captureImageUrl ?? ''}
+                    alt=""
+                    className="w-full h-full object-cover"
+                  />
+                </div>
+              )}
+              <div className="min-w-0 flex-1">
                 {d.damageName && (
                   <div className="font-semibold text-foreground text-sm leading-tight mb-0.5">{d.damageName}</div>
                 )}
                 <div className="font-medium text-foreground truncate">
-                  <span className="text-muted-foreground font-normal">Type </span>
+                  <span className="text-muted-foreground font-normal">Damage type </span>
                   {d.type}
                 </div>
                 <div className="text-muted-foreground">
+                  <span className="text-muted-foreground font-normal">Source </span>
+                  {d.ai ? 'AI' : 'Manual'}
+                  {(d.captureDataUrl || d.captureImageUrl) && (
+                    <span className="text-muted-foreground"> · camera</span>
+                  )}
+                  {' · '}
                   <span className={d.severity === 'High' ? 'text-destructive' : d.severity === 'Medium' ? 'text-yellow-600 dark:text-yellow-400' : ''}>{d.severity}</span>
-                  {' · '}{d.ai ? 'AI' : 'Manual'}
-                  {d.isDuplicate && <span className="ml-1 text-muted-foreground">· duplicate</span>}
+                  {d.isDuplicate && <span className="ml-1">· duplicate</span>}
                   {d.flagged && <span className="ml-1 text-amber-700 dark:text-amber-300">· flagged</span>}
                 </div>
               </div>
-              <span className="shrink-0 flex items-center gap-0.5">
+              <span className="shrink-0 flex items-center gap-0.5 self-center">
                 {d.confirmed === true && <CheckCircle size={12} className="text-primary" />}
                 {d.confirmed === false && <XCircle size={12} className="text-destructive" />}
                 {d.confirmed == null && <Clock size={12} className="text-muted-foreground" />}

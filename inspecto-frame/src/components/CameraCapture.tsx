@@ -1,5 +1,7 @@
 import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
-import { Camera, Image, X, RotateCcw, Check } from 'lucide-react';
+import { Camera, Image, X, RotateCcw } from 'lucide-react';
+import { humanizeDetectionType } from '@/services/uveyeApi';
+import { UVeye_CATALOG_DAMAGE_CHECK_TYPES } from '@/lib/uveyeCatalogDamageTypes';
 
 export const MANUAL_DAMAGE_TYPES = [
   'Scratch',
@@ -10,10 +12,19 @@ export const MANUAL_DAMAGE_TYPES = [
   'Other',
 ] as const;
 
+function newCaptureId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `cap_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
 export type CapturedPhotoPayload = {
   dataUrl: string;
   partName: string;
   damageType: string;
+  /** Links the saved photo to the matching manual damage row in the inspection. */
+  captureId: string;
 };
 
 interface CameraCaptureProps {
@@ -21,6 +32,8 @@ interface CameraCaptureProps {
   partNames: string[];
   /** When opened from a part, pre-select this name if it exists in `partNames`. */
   suggestedPartName?: string;
+  /** Extra humanized labels from this scan (payload + AI rows) if not already in manual list or catalog. */
+  additionalDamageTypes?: string[];
   onCapture: (payload: CapturedPhotoPayload) => void;
   onClose: () => void;
 }
@@ -37,6 +50,7 @@ function shouldUseNativeCameraCapture(): boolean {
 export default function CameraCapture({
   partNames,
   suggestedPartName,
+  additionalDamageTypes = [],
   onCapture,
   onClose,
 }: CameraCaptureProps) {
@@ -47,15 +61,30 @@ export default function CameraCapture({
   const [mode, setMode] = useState<'menu' | 'live' | 'details'>('menu');
   const [error, setError] = useState<string | null>(null);
   const [pendingDataUrl, setPendingDataUrl] = useState<string | null>(null);
-  const [partFilter, setPartFilter] = useState('');
   const [selectedPart, setSelectedPart] = useState('');
   const [damageType, setDamageType] = useState<string>(MANUAL_DAMAGE_TYPES[0]);
 
-  const filteredParts = useMemo(() => {
-    const q = partFilter.trim().toLowerCase();
-    if (!q) return partNames;
-    return partNames.filter((p) => p.toLowerCase().includes(q));
-  }, [partNames, partFilter]);
+  const damageTypeOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    const add = (label: string) => {
+      const s = (label || '').trim();
+      if (!s) return;
+      const k = s.toLowerCase();
+      if (seen.has(k)) return;
+      seen.add(k);
+      out.push(s);
+    };
+    for (const t of MANUAL_DAMAGE_TYPES) add(t);
+    const fromCatalog = UVeye_CATALOG_DAMAGE_CHECK_TYPES.map((raw) => humanizeDetectionType(raw));
+    fromCatalog.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+    for (const t of fromCatalog) add(t);
+    const extras = [...additionalDamageTypes].sort((a, b) =>
+      a.localeCompare(b, undefined, { sensitivity: 'base' }),
+    );
+    for (const t of extras) add(t);
+    return out;
+  }, [additionalDamageTypes]);
 
   const stopStream = useCallback(() => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -70,7 +99,6 @@ export default function CameraCapture({
     stopStream();
     setMode('details');
     setPendingDataUrl(dataUrl);
-    setPartFilter('');
     const suggested =
       suggestedPartName && partNames.includes(suggestedPartName) ? suggestedPartName : '';
     setSelectedPart(suggested || partNames[0] || '');
@@ -139,8 +167,16 @@ export default function CameraCapture({
 
   const submitDetails = () => {
     if (!pendingDataUrl || !selectedPart.trim()) return;
-    const dt = damageType.trim() || MANUAL_DAMAGE_TYPES[0];
-    onCapture({ dataUrl: pendingDataUrl, partName: selectedPart.trim(), damageType: dt });
+    const resolvedType = damageTypeOptions.includes(damageType)
+      ? damageType
+      : damageTypeOptions[0] || MANUAL_DAMAGE_TYPES[0];
+    const dt = resolvedType.trim() || MANUAL_DAMAGE_TYPES[0];
+    onCapture({
+      dataUrl: pendingDataUrl,
+      partName: selectedPart.trim(),
+      damageType: dt,
+      captureId: newCaptureId(),
+    });
   };
 
   const handleClose = () => {
@@ -154,9 +190,9 @@ export default function CameraCapture({
         <div className="bg-card rounded-2xl shadow-2xl border border-border w-full max-w-lg max-h-[92vh] overflow-hidden flex flex-col">
           <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
             <div>
-              <h3 className="font-bold text-foreground text-base">Link photo to a part</h3>
+              <h3 className="font-bold text-foreground text-base">Document missed damage</h3>
               <p className="text-xs text-muted-foreground mt-0.5">
-                Choose which panel this evidence belongs to and the damage type.
+                Pick the car part and damage type so this finding matches the vehicle map and reports.
               </p>
             </div>
             <button
@@ -174,53 +210,47 @@ export default function CameraCapture({
             </div>
 
             <div>
-              <label className="text-xs font-semibold text-foreground block mb-1.5">Car part</label>
-              <input
-                type="text"
-                value={partFilter}
-                onChange={(e) => setPartFilter(e.target.value)}
-                placeholder="Search parts…"
-                className="w-full px-3 py-2 text-sm rounded-lg border border-input bg-background text-foreground placeholder:text-muted-foreground mb-2"
-              />
-              <div className="max-h-36 overflow-y-auto rounded-lg border border-border bg-muted/20 divide-y divide-border">
-                {filteredParts.length === 0 ? (
-                  <p className="text-xs text-muted-foreground p-3">No matching parts.</p>
+              <label htmlFor="camera-capture-part" className="text-xs font-semibold text-foreground block mb-1.5">
+                Car part
+              </label>
+              <select
+                id="camera-capture-part"
+                value={selectedPart}
+                onChange={(e) => setSelectedPart(e.target.value)}
+                className="w-full px-3 py-2.5 text-sm rounded-lg border border-input bg-background text-foreground"
+              >
+                {partNames.length === 0 ? (
+                  <option value="">No parts configured</option>
                 ) : (
-                  filteredParts.map((name) => (
-                    <button
-                      key={name}
-                      type="button"
-                      onClick={() => setSelectedPart(name)}
-                      className={`w-full text-left px-3 py-2 text-sm transition-colors flex items-center justify-between gap-2 ${
-                        selectedPart === name ? 'bg-primary/15 text-primary font-semibold' : 'hover:bg-accent text-foreground'
-                      }`}
-                    >
-                      <span className="truncate">{name}</span>
-                      {selectedPart === name && <Check size={14} className="shrink-0" />}
-                    </button>
+                  partNames.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
                   ))
                 )}
-              </div>
+              </select>
             </div>
 
             <div>
-              <label className="text-xs font-semibold text-foreground block mb-2">Damage type</label>
-              <div className="flex flex-wrap gap-2">
-                {MANUAL_DAMAGE_TYPES.map((t) => (
-                  <button
-                    key={t}
-                    type="button"
-                    onClick={() => setDamageType(t)}
-                    className={`px-3 py-2 rounded-lg text-xs font-medium border transition-all ${
-                      damageType === t
-                        ? 'bg-primary text-primary-foreground border-primary'
-                        : 'border-border text-foreground hover:bg-muted/60'
-                    }`}
-                  >
+              <label htmlFor="camera-capture-damage" className="text-xs font-semibold text-foreground block mb-1.5">
+                Damage type
+              </label>
+              <select
+                id="camera-capture-damage"
+                value={damageTypeOptions.includes(damageType) ? damageType : damageTypeOptions[0]}
+                onChange={(e) => setDamageType(e.target.value)}
+                className="w-full px-3 py-2.5 text-sm rounded-lg border border-input bg-background text-foreground"
+              >
+                {damageTypeOptions.map((t) => (
+                  <option key={t} value={t}>
                     {t}
-                  </button>
+                  </option>
                 ))}
-              </div>
+              </select>
+              <p className="text-[11px] text-muted-foreground mt-1.5">
+                Quick picks first, then the full UVeye body / tire / undercarriage damage list, then any
+                extra types from this scan.
+              </p>
             </div>
           </div>
 
@@ -251,9 +281,9 @@ export default function CameraCapture({
       <div className="bg-card rounded-2xl shadow-2xl border border-border p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-5">
           <div>
-            <h3 className="font-bold text-foreground text-base">Add photo evidence</h3>
+            <h3 className="font-bold text-foreground text-base">Capture missed damage</h3>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Capture or choose an image, then pick part + damage type.
+              Document damage the scan did not flag — add a photo, then choose part and damage type.
             </p>
           </div>
           <button

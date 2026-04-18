@@ -5,6 +5,8 @@ import type { CapturedPhotoEntry } from '@/types/capturedPhoto';
 import InspectionSummary from './InspectionSummary';
 import {
   buildCameraFramesFromResponse,
+  collectHumanizedDamageTypesFromPayload,
+  humanizeDetectionType,
   mapUveyeAlertsToDamages,
   mergePersistedDamagesWithFreshMap,
   prefetchUveyeImages,
@@ -18,16 +20,26 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '
 import { useIsMobile } from '@/hooks/use-mobile';
 import { cn } from '@/lib/utils';
 import {
-  AREAS,
   ALL_AREAS,
   CAR_PARTS,
+  isSyntheticDamageFrameId,
   partNameMatches,
+  sortPartsByPanelOrder,
   type Area,
   type CarPart,
   type Damage,
 } from '@/lib/assistedInspectionModel';
 import { SEDAN_LAYOUT_BASE_PX } from '@/lib/sedanDiagramCalibration';
 import { DamageReportPreviewDialog } from '@/components/DamageReportPreviewDialog';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
 import { SedanUnifiedDiagram } from '@/components/SedanUnifiedDiagram';
 import interiorDamagesSketchSvg from '@/assets/interior-damages-sketch.svg?raw';
 import undercarriageSketchSvg from '@/assets/undercarriage-sketch.svg?raw';
@@ -56,6 +68,7 @@ import {
   XCircle,
   Truck,
   Table2,
+  Play,
 } from 'lucide-react';
 
 /** Same corner slugs as `buildCameraFramesFromResponse` (`artemis_leftFront_tread`, …). */
@@ -86,7 +99,17 @@ function getFramesForPart(
 ): UveyeCameraFrame[] {
   const artemisCorner = artemisCornerForPartName(part.name);
   const partDmgs = damages.filter(d => partNameMatches(part.name, d.part));
-  const frameIds = new Set(partDmgs.map(d => d.frameId));
+  const frameIds = new Set(
+    partDmgs.map((d) => d.frameId).filter((id) => id && !isSyntheticDamageFrameId(id)),
+  );
+  /** Only manual / synthetic frame rows — never fall back to the full walk-around for this part. */
+  if (partDmgs.length > 0 && frameIds.size === 0) {
+    if (artemisCorner) {
+      const cornerFrames = framesForArtemisCorner(allFrames, artemisCorner);
+      return cornerFrames.length > 0 ? cornerFrames : [];
+    }
+    return [];
+  }
   if (frameIds.size > 0) {
     const matched = allFrames.filter(f => frameIds.has(f.id));
     /** Stale persisted frameIds or API reordering can yield no rows — fall back so tread/wall images still load. */
@@ -180,6 +203,8 @@ export default function AssistedInspectionV3({
     () => typeof window !== 'undefined' && window.innerWidth >= 768,
   );
   const [viewportZoom, setViewportZoom] = useState(1);
+  /** Tap photo: hide viewport chrome and, when available, swap to API full-frame image (no arrows). */
+  const [photoReviewFocus, setPhotoReviewFocus] = useState(false);
   const isMobile = useIsMobile();
 
   /** Vehicle map panel: keep the top-down diagram visible by default (mobile users otherwise saw only the parts list). */
@@ -197,6 +222,8 @@ export default function AssistedInspectionV3({
   // Summary view state
   const [showSummary, setShowSummary] = useState(false);
   const [damageReportPreviewOpen, setDamageReportPreviewOpen] = useState(false);
+  const [inspectionCompleteOpen, setInspectionCompleteOpen] = useState(false);
+  const wasAllDetectionsReviewedRef = useRef(false);
 
   // Damage review navigation
   const [selectedDamageIdx, setSelectedDamageIdx] = useState(0);
@@ -264,15 +291,43 @@ export default function AssistedInspectionV3({
   const allParts = [...CAR_PARTS, ...customParts];
   const partNames = useMemo(() => allParts.map((p) => p.name), [allParts]);
 
-  const partFrames = useMemo(
-    () => (activePart ? getFramesForPart(activePart, allFrames, damages) : []),
-    [activePart, allFrames, damages],
-  );
+  const inspectorDamageTypesFromPayload = useMemo(() => {
+    const set = new Set<string>();
+    for (const t of collectHumanizedDamageTypesFromPayload(payload)) {
+      set.add(t);
+    }
+    for (const d of damages) {
+      if (!d.ai) continue;
+      const raw = (d.type || '').trim();
+      if (!raw) continue;
+      set.add(humanizeDetectionType(raw));
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  }, [payload, damages]);
+
+  /** UVeye frames for the part, or a single synthetic frame when the only evidence is an inspector photo. */
+  const { partFrames, viewportFrameImages } = useMemo(() => {
+    if (!activePart) return { partFrames: [] as UveyeCameraFrame[], viewportFrameImages: frameImages };
+    const pfs = getFramesForPart(activePart, allFrames, damages);
+    if (pfs.length > 0) return { partFrames: pfs, viewportFrameImages: frameImages };
+    const cap = damages.find(
+      (d) =>
+        partNameMatches(activePart.name, d.part) && (d.captureDataUrl?.trim() || d.captureImageUrl?.trim()),
+    );
+    const url = (cap?.captureDataUrl ?? cap?.captureImageUrl)?.trim();
+    if (!url) return { partFrames: pfs, viewportFrameImages: frameImages };
+    const id = '__manual_evidence__';
+    return {
+      partFrames: [{ id, camera: 'Inspector photo', frameNum: 1 }],
+      viewportFrameImages: { ...frameImages, [id]: url },
+    };
+  }, [activePart, allFrames, damages, frameImages]);
   const currentFrame = partFrames[currentFrameIdx] || null;
 
-  const partDamages = activePart
-    ? damages.filter(d => partNameMatches(activePart.name, d.part))
-    : [];
+  const partDamages = useMemo(
+    () => (activePart ? damages.filter((d) => partNameMatches(activePart.name, d.part)) : []),
+    [activePart, damages],
+  );
   const confirmedCount = damages.filter(d => d.confirmed === true).length;
   const dismissedCount = damages.filter(d => d.confirmed === false).length;
   const duplicateCount = damages.filter(d => d.isDuplicate).length;
@@ -309,7 +364,10 @@ export default function AssistedInspectionV3({
   }, [currentFrame?.id, activePart?.name]);
 
   const partsWithDamage = useMemo(
-    () => allParts.filter(p => damages.some(d => partNameMatches(p.name, d.part))),
+    () =>
+      sortPartsByPanelOrder(
+        allParts.filter((p) => damages.some((d) => partNameMatches(p.name, d.part))),
+      ),
     [allParts, damages],
   );
 
@@ -358,21 +416,41 @@ export default function AssistedInspectionV3({
     [setDamageConfirmed, nextFrameOrPart],
   );
 
+  const viewportImageSrc = useMemo(() => {
+    if (!currentFrame?.id) return '';
+    const base = viewportFrameImages[currentFrame.id] ?? '';
+    if (!photoReviewFocus) return base;
+    if (!partDamages.length) return base;
+    const d = partDamages[Math.min(selectedDamageIdx, partDamages.length - 1)];
+    const clean = d?.cleanReviewImageUrl?.trim();
+    return clean || base;
+  }, [currentFrame?.id, viewportFrameImages, photoReviewFocus, partDamages, selectedDamageIdx]);
+
   useEffect(() => {
     if (!activePart || partFrames.length === 0) return;
     const prevId = partFrames[currentFrameIdx - 1]?.id;
     const nextId = partFrames[currentFrameIdx + 1]?.id;
     const curId = partFrames[currentFrameIdx]?.id;
+    const dmg =
+      partDamages.length > 0
+        ? partDamages[Math.min(selectedDamageIdx, partDamages.length - 1)]
+        : undefined;
     prefetchUveyeImages([
-      curId ? frameImages[curId] : undefined,
-      prevId ? frameImages[prevId] : undefined,
-      nextId ? frameImages[nextId] : undefined,
+      curId ? viewportFrameImages[curId] : undefined,
+      prevId ? viewportFrameImages[prevId] : undefined,
+      nextId ? viewportFrameImages[nextId] : undefined,
+      dmg?.cleanReviewImageUrl,
     ]);
-  }, [activePart, partFrames, currentFrameIdx, frameImages]);
+  }, [activePart, partFrames, currentFrameIdx, viewportFrameImages, partDamages, selectedDamageIdx]);
 
   useEffect(() => {
     setViewportZoom(1);
+    setPhotoReviewFocus(false);
   }, [currentFrame?.id]);
+
+  useEffect(() => {
+    setPhotoReviewFocus(false);
+  }, [selectedDamageIdx, activePart?.name]);
 
   /** New part on mobile: start in image-focus (compact) mode. */
   useEffect(() => {
@@ -411,6 +489,36 @@ export default function AssistedInspectionV3({
     return idx > 0;
   }, [activePart, partFrames, currentFrameIdx, partsWithDamage]);
 
+  const allDetectionsReviewed = useMemo(
+    () =>
+      damages.length > 0 &&
+      damages.every((d) => d.confirmed === true || d.confirmed === false),
+    [damages],
+  );
+
+  useEffect(() => {
+    if (allDetectionsReviewed && !wasAllDetectionsReviewedRef.current) {
+      setInspectionCompleteOpen(true);
+    }
+    wasAllDetectionsReviewedRef.current = allDetectionsReviewed;
+  }, [allDetectionsReviewed]);
+
+  const handleStartInspection = useCallback(() => {
+    const part = partsWithDamage[0];
+    if (!part) return;
+    const pfs = getFramesForPart(part, allFrames, damages);
+    const partDmg = damages.filter((d) => partNameMatches(part.name, d.part));
+    const firstDmg = partDmg[0];
+    let frameIdx = 0;
+    if (firstDmg && pfs.length > 0) {
+      const fi = pfs.findIndex((f) => f.id === firstDmg.frameId);
+      if (fi >= 0) frameIdx = fi;
+    }
+    setExpandedArea(part.area);
+    selectPart(part, frameIdx);
+    if (!isMobile) setSidebarOpen(true);
+  }, [partsWithDamage, allFrames, damages, isMobile, selectPart]);
+
   const getPartDamageCount = (partName: string) =>
     damages.filter(d => partNameMatches(partName, d.part)).length;
   const getPartHasDamage = (partName: string) =>
@@ -446,8 +554,7 @@ export default function AssistedInspectionV3({
       <InspectionSummary
         vehicleLabel={vehicleLabel || 'Vehicle'}
         damages={damages}
-        reviewedParts={reviewedParts}
-        totalParts={allParts.length}
+        payload={payload}
         onBack={() => setShowSummary(false)}
         capturedPhotos={capturedPhotos}
       />
@@ -492,7 +599,7 @@ export default function AssistedInspectionV3({
         </div>
         <div className="space-y-0.5 px-2 pb-4">
           {ALL_AREAS.map((area) => {
-            const areaParts = allParts.filter((p) => p.area === area);
+            const areaParts = sortPartsByPanelOrder(allParts.filter((p) => p.area === area));
             const areaHasDamage = areaParts.some((p) => getPartHasDamage(p.name));
             const areaDamageCount = areaParts.reduce((sum, p) => sum + getPartDamageCount(p.name), 0);
             const reviewedCount = areaParts.filter((p) => reviewedParts.has(p.name)).length;
@@ -645,8 +752,27 @@ export default function AssistedInspectionV3({
         <CameraCapture
           partNames={partNames}
           suggestedPartName={activePart?.name}
+          additionalDamageTypes={inspectorDamageTypesFromPayload}
           onCapture={(capturePayload) => {
-            setCapturedPhotos((prev) => [...prev, { ...capturePayload, timestamp: new Date() }]);
+            const ts = new Date();
+            setCapturedPhotos((prev) => [...prev, { ...capturePayload, timestamp: ts }]);
+            setDamages((prev) => [
+              ...prev,
+              {
+                id: Date.now() + Math.floor(Math.random() * 1000),
+                part: capturePayload.partName,
+                type: capturePayload.damageType,
+                severity: 'Medium',
+                ai: false,
+                x: 50,
+                y: 50,
+                frameId: '__manual_capture__',
+                confirmed: null,
+                damageName: capturePayload.damageType,
+                captureId: capturePayload.captureId,
+                captureDataUrl: capturePayload.dataUrl,
+              },
+            ]);
             setShowCameraCapture(false);
           }}
           onClose={() => setShowCameraCapture(false)}
@@ -660,6 +786,23 @@ export default function AssistedInspectionV3({
         damages={damages}
         vehicleLabel={vehicleLabel}
       />
+
+      <Dialog open={inspectionCompleteOpen} onOpenChange={setInspectionCompleteOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>All detections reviewed</DialogTitle>
+            <DialogDescription>
+              No detections are left to approve or reject. Open Summary &amp; stats from the header, or keep
+              browsing the vehicle map.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button type="button" onClick={() => setInspectionCompleteOpen(false)}>
+              Done
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Desktop / tablet header */}
       <div className="hidden md:flex items-center justify-between px-5 py-3 bg-card border-b border-border shrink-0 gap-4">
@@ -706,17 +849,17 @@ export default function AssistedInspectionV3({
             type="button"
             onClick={() => setShowCameraCapture(true)}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors border border-border"
-            title="Add photo evidence — choose car part and damage type after capture"
+            title="Capture missed damage — add a photo, then choose car part and damage type"
           >
-            <Camera size={14} /> Photo
+            <Camera size={14} /> Missed damage
           </button>
           <button
             type="button"
             onClick={() => setShowSummary(true)}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors border border-border"
-            title="View summary report"
+            title="View Summary & stats"
           >
-            <FileText size={14} /> Summary
+            <FileText size={14} /> Summary &amp; stats
           </button>
           <button
             type="button"
@@ -789,15 +932,16 @@ export default function AssistedInspectionV3({
             type="button"
             onClick={() => setShowCameraCapture(true)}
             className="p-2 rounded-lg border border-border text-muted-foreground hover:bg-accent shrink-0"
-            title="Add photo"
+            title="Capture missed damage — photo, then part and damage type"
           >
-            <Camera size={18} />
+            <Camera size={18} aria-hidden />
+            <span className="sr-only">Capture missed damage</span>
           </button>
           <button
             type="button"
             onClick={() => setShowSummary(true)}
             className="p-2 rounded-lg border border-border text-muted-foreground hover:bg-accent shrink-0"
-            title="Summary"
+            title="Summary & stats"
           >
             <FileText size={18} />
           </button>
@@ -857,6 +1001,21 @@ export default function AssistedInspectionV3({
           )}
         </div>
       </div>
+
+      {partsWithDamage.length > 0 && !activePart && (
+        <div className="flex shrink-0 flex-col gap-2 border-b border-border bg-primary/5 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm text-muted-foreground">
+            <span className="font-semibold text-foreground">Start inspection</span> — {damages.length}{' '}
+            detection{damages.length !== 1 ? 's' : ''} across {partsWithDamage.length} part
+            {partsWithDamage.length !== 1 ? 's' : ''}. Jumps to the first part in walk order with the matching
+            frame.
+          </p>
+          <Button type="button" onClick={handleStartInspection} className="shrink-0 gap-2" size="sm">
+            <Play size={16} className="shrink-0" aria-hidden />
+            Start inspection
+          </Button>
+        </div>
+      )}
 
       {/* MAIN CONTENT — image viewport + collapsible right sidebar */}
       <div className="flex-1 flex min-h-0 overflow-hidden">
@@ -933,14 +1092,6 @@ export default function AssistedInspectionV3({
                     })()}
                   <button
                     type="button"
-                    onClick={() => setShowCameraCapture(true)}
-                    className="shrink-0 rounded-lg border border-border p-2 text-muted-foreground hover:bg-accent"
-                    title="Photo"
-                  >
-                    <Camera size={16} />
-                  </button>
-                  <button
-                    type="button"
                     onClick={() => setActivePart(null)}
                     className="shrink-0 rounded-lg px-2 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
                   >
@@ -974,14 +1125,6 @@ export default function AssistedInspectionV3({
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowCameraCapture(true)}
-                    className="flex items-center gap-2 rounded-xl bg-accent px-3 py-2 text-xs font-semibold text-accent-foreground transition-all active:scale-95"
-                    title="Take photo or upload from gallery"
-                  >
-                    <Camera size={14} /> <span className="hidden sm:inline">Photo</span>
-                  </button>
                   <button
                     type="button"
                     onClick={() => setActivePart(null)}
@@ -1166,12 +1309,13 @@ export default function AssistedInspectionV3({
                   className="flex-1 relative min-h-0 overflow-hidden flex flex-col"
                   style={{ backgroundImage: 'radial-gradient(circle at 50% 50%, hsl(215 28% 22%) 0%, hsl(215 28% 12%) 100%)' }}
                 >
-                  {currentFrame && frameImages[currentFrame.id] ? (
+                  {currentFrame && viewportImageSrc ? (
                     <InspectionViewportImage
-                      src={frameImages[currentFrame.id]}
+                      src={viewportImageSrc}
                       alt={`${currentFrame.camera} frame ${currentFrame.frameNum}`}
                       zoom={viewportZoom}
                       onZoomChange={setViewportZoom}
+                      onPhotoTap={() => setPhotoReviewFocus((v) => !v)}
                     />
                   ) : (
                     <div className="flex flex-1 flex-col items-center justify-center gap-3 text-muted-foreground/60 py-12 min-h-0">
@@ -1183,7 +1327,7 @@ export default function AssistedInspectionV3({
                 </div>
 
                 {/* Zoom + keyboard hint */}
-                {currentFrame && frameImages[currentFrame.id] && (
+                {currentFrame && viewportFrameImages[currentFrame.id] && !photoReviewFocus && (
                   <div className="absolute top-3 right-3 flex items-center gap-1 bg-card/95 backdrop-blur-md border border-border rounded-lg p-1 shadow-lg z-10">
                     <button
                       type="button"
@@ -1212,11 +1356,22 @@ export default function AssistedInspectionV3({
                     </button>
                   </div>
                 )}
-                <div className="pointer-events-none absolute bottom-14 left-1/2 -translate-x-1/2 z-10 hidden sm:block text-[10px] text-background/80 bg-foreground/30 px-2 py-0.5 rounded-full max-w-[90%] text-center">
-                  ← → frames · scroll zooms when fit · when zoomed scroll pans, Ctrl+scroll zooms · drag to pan
-                </div>
+                {photoReviewFocus ? (
+                  <div className="pointer-events-none absolute bottom-14 left-1/2 -translate-x-1/2 z-10 text-[10px] text-background/90 bg-foreground/45 px-2 py-0.5 rounded-full max-w-[92%] text-center">
+                    Tap the photo again for zoom, frame dots, and navigation
+                  </div>
+                ) : (
+                  <>
+                    <div className="pointer-events-none absolute bottom-14 left-1/2 -translate-x-1/2 z-10 hidden sm:block text-[10px] text-background/80 bg-foreground/30 px-2 py-0.5 rounded-full max-w-[90%] text-center">
+                      ← → frames · scroll zooms when fit · when zoomed scroll pans, Ctrl+scroll zooms · drag to pan · pinch to zoom (touch)
+                    </div>
+                    <div className="pointer-events-none absolute bottom-14 left-1/2 -translate-x-1/2 z-10 sm:hidden text-[10px] text-background/90 bg-foreground/40 px-2 py-0.5 rounded-full max-w-[92%] text-center">
+                      Pinch to zoom · tap photo to hide on-screen controls (and arrows when a clean frame is available)
+                    </div>
+                  </>
+                )}
 
-                {partFrames.length > 0 && (partFrames.length > 1 || navNextEnabled || navPrevEnabled) && (
+                {partFrames.length > 0 && (partFrames.length > 1 || navNextEnabled || navPrevEnabled) && !photoReviewFocus && (
                   <>
                     <button
                       type="button"
@@ -1237,7 +1392,7 @@ export default function AssistedInspectionV3({
                   </>
                 )}
 
-                {partFrames.length > 0 && (
+                {partFrames.length > 0 && !photoReviewFocus && (
                 <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex gap-1 bg-foreground/30 backdrop-blur-md px-3 py-2 rounded-full items-center max-w-[90%] overflow-x-auto z-10">
                   {partFrames.map((frame, idx) => {
                     const hasDamage = partDamages.some(d => d.frameId === frame.id);
@@ -1260,7 +1415,7 @@ export default function AssistedInspectionV3({
                 </div>
                 )}
 
-                {currentFrame && (
+                {currentFrame && !photoReviewFocus && (
                   <div className="absolute top-3 left-3 bg-foreground/40 backdrop-blur-md text-background text-xs px-3 py-1.5 rounded-lg font-mono z-10">
                     {currentFrame.camera} • f{currentFrame.frameNum}
                   </div>

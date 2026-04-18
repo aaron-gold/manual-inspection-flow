@@ -273,11 +273,11 @@ export default function Index() {
             <AlertDialogTitle>Clear all local data?</AlertDialogTitle>
             <AlertDialogDescription className="text-left space-y-2">
               <span className="block">
-                This removes every inspection, review progress, captured photos, and cached scan data stored in
-                this browser on this device. It does not run automatically—you chose to clear.
+                This clears your inspection list and removes review progress, captured photos, and cached scan
+                data stored in this browser on this device. It only runs when you confirm.
               </span>
               <span className="block font-medium text-foreground">
-                Export today&apos;s pack first if you need a backup. This cannot be undone.
+                Download the full pack (CSV + photos) first if you need a backup. This cannot be undone.
               </span>
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -300,8 +300,8 @@ export default function Index() {
           <DialogHeader className="px-6 pt-6 pb-2 shrink-0">
             <DialogTitle>Daily activity preview</DialogTitle>
             <DialogDescription>
-              Same columns as <code className="text-xs bg-muted px-1 rounded">daily-activity.csv</code> in
-              today&apos;s ZIP—local calendar day, no download required.
+              Same columns as <code className="text-xs bg-muted px-1 rounded">daily-activity.csv</code> in the
+              full pack (CSV + photos)—local calendar day, no download required.
             </DialogDescription>
           </DialogHeader>
           <div className="px-6 pb-6 flex-1 min-h-0 flex flex-col gap-2">

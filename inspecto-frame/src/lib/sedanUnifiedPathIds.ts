@@ -42,9 +42,9 @@ const EXPLICIT_SVG_IDS: Partial<Record<string, string | string[]>> = {
   /** Figma uses `rear-glass` for rear window */
   'Rear Window': 'rear-glass',
   /**
-   * Tread anomalies (depth, FOD, tread wear) → path `*-tire-tread`.
-   * Rim / sidewall / bulges / cuts → `<circle id="*-tire-wall">`. Assignment comes from `uveyeApi`
-   * `resolveArtemisDiagramSurface` + `Damage.part` (`… Tire` vs `… Tire Wall`).
+   * Tread anomalies (depth, FOD, tread wear, groove synthetics) → path `*-tire-tread`.
+   * Rim / sidewall / bulges / cuts → `<circle id="*-tire-wall">`. Artemis maps `wallDetections` → `… Tire Wall`,
+   * `treadDetections` + groove rows → `… Tire` (`uveyeApi` `artemisTireAlerts`).
    */
   'Left Front Tire': 'front-left-tire-tread',
   'Right Front Tire': 'front-right-tire-tread',

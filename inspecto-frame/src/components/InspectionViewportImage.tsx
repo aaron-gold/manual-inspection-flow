@@ -7,17 +7,33 @@ type Props = {
   /** 1 = fit entire image in view; &gt;1 = magnify from that fit baseline */
   zoom: number;
   onZoomChange: (z: number) => void;
+  /** Single tap / click on the photo (after a pinch, clicks are ignored briefly). */
+  onPhotoTap?: () => void;
 };
 
 /**
  * Fits the image in the visible area at zoom 1 (contain).
  * When zoom &gt; 1, the bitmap is larger than the viewport and the user can scroll + drag to pan.
+ * Pinch-to-zoom uses two-finger spread on touch devices.
  */
-export default function InspectionViewportImage({ src, alt, zoom, onZoomChange }: Props) {
+export default function InspectionViewportImage({
+  src,
+  alt,
+  zoom,
+  onZoomChange,
+  onPhotoTap,
+}: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
   const [box, setBox] = useState({ w: 0, h: 0 });
   const dragRef = useRef<{ x: number; y: number; sl: number; st: number } | null>(null);
+  const panDownRef = useRef<{ x: number; y: number } | null>(null);
+  const suppressClickRef = useRef(false);
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
+
+  const pinchRef = useRef<{ dist0: number; z0: number } | null>(null);
+  const lastPinchEndRef = useRef(0);
 
   useEffect(() => {
     setNatural(null);
@@ -80,12 +96,59 @@ export default function InspectionViewportImage({ src, alt, zoom, onZoomChange }
     return () => el.removeEventListener('wheel', handler);
   }, [zoom, onZoomChange]);
 
+  /** Two-finger pinch zoom (touch screens). */
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    const distance = (a: Touch, b: Touch) =>
+      Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        pinchRef.current = {
+          dist0: distance(e.touches[0], e.touches[1]),
+          z0: zoomRef.current,
+        };
+      }
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.touches.length !== 2 || !pinchRef.current) return;
+      const d = distance(e.touches[0], e.touches[1]);
+      const { dist0, z0 } = pinchRef.current;
+      if (dist0 <= 0) return;
+      e.preventDefault();
+      const next = Math.min(4, Math.max(1, z0 * (d / dist0)));
+      onZoomChange(next);
+    };
+
+    const onTouchEnd = (e: TouchEvent) => {
+      if (pinchRef.current && e.touches.length < 2) {
+        lastPinchEndRef.current = Date.now();
+        pinchRef.current = null;
+      }
+    };
+
+    el.addEventListener('touchstart', onTouchStart, { passive: true });
+    el.addEventListener('touchmove', onTouchMove, { passive: false });
+    el.addEventListener('touchend', onTouchEnd);
+    el.addEventListener('touchcancel', onTouchEnd);
+    return () => {
+      el.removeEventListener('touchstart', onTouchStart);
+      el.removeEventListener('touchmove', onTouchMove);
+      el.removeEventListener('touchend', onTouchEnd);
+      el.removeEventListener('touchcancel', onTouchEnd);
+    };
+  }, [onZoomChange]);
+
   const onPointerDown = useCallback(
     (e: React.PointerEvent) => {
       if (zoom <= 1 || e.button !== 0) return;
       const el = scrollRef.current;
       if (!el) return;
       el.setPointerCapture(e.pointerId);
+      panDownRef.current = { x: e.clientX, y: e.clientY };
       dragRef.current = {
         x: e.clientX,
         y: e.clientY,
@@ -107,6 +170,12 @@ export default function InspectionViewportImage({ src, alt, zoom, onZoomChange }
   }, []);
 
   const endDrag = useCallback((e: React.PointerEvent) => {
+    if (zoomRef.current > 1 && panDownRef.current) {
+      const dx = e.clientX - panDownRef.current.x;
+      const dy = e.clientY - panDownRef.current.y;
+      if (Math.hypot(dx, dy) > 12) suppressClickRef.current = true;
+    }
+    panDownRef.current = null;
     dragRef.current = null;
     const el = scrollRef.current;
     try {
@@ -115,6 +184,22 @@ export default function InspectionViewportImage({ src, alt, zoom, onZoomChange }
       /* ignore */
     }
   }, []);
+
+  const onPhotoClick = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (!onPhotoTap) return;
+      if (suppressClickRef.current) {
+        suppressClickRef.current = false;
+        return;
+      }
+      if (Date.now() - lastPinchEndRef.current < 500) return;
+      const t = e.target;
+      if (!(t instanceof Element)) return;
+      if (t.tagName !== 'IMG') return;
+      onPhotoTap();
+    },
+    [onPhotoTap],
+  );
 
   return (
     <div
@@ -126,7 +211,8 @@ export default function InspectionViewportImage({ src, alt, zoom, onZoomChange }
       onPointerMove={onPointerMove}
       onPointerUp={endDrag}
       onPointerCancel={endDrag}
-      style={{ touchAction: zoom > 1 ? 'none' : undefined }}
+      onClick={onPhotoClick}
+      style={{ touchAction: 'none' }}
     >
       <div
         className="box-border flex min-h-full w-full min-w-0 flex-1 flex-col items-center justify-center p-2"

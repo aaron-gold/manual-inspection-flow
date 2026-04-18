@@ -10,7 +10,7 @@ import {
 type SedanUnifiedDiagramProps = {
   damages: Damage[];
   className?: string;
-  /** When set, panels are clickable and select that part in the inspection UI. */
+  /** When set, highlighted (damaged) panels are clickable and select that part in the inspection UI. */
   onPartClick?: (partName: string) => void;
 };
 
@@ -86,7 +86,8 @@ export function SedanUnifiedDiagram({ damages, className, onPartClick }: SedanUn
         } else {
           el.setAttribute('fill', fill);
         }
-        if (onPartClick) {
+        /** Only damaged (highlighted) panels select the part — idle panels stay inert. */
+        if (onPartClick && hasDamage) {
           el.style.cursor = 'pointer';
           const handler = (e: MouseEvent) => {
             e.stopPropagation();

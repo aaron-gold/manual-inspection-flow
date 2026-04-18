@@ -6,5 +6,6 @@ export type CapturedPhotoEntry = {
   dataUrl?: string;
   imageUrl?: string;
   storagePath?: string;
+  /** When set, matches `Damage.captureId` for the same camera capture. */
   captureId?: string;
 };

@@ -73,40 +73,43 @@ export default function InspectionDashboard({
               {inspections.length} inspection{inspections.length !== 1 ? 's' : ''} retrieved
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
-            {onPreviewDailyPack && (
+          <div className="flex flex-col items-stretch sm:items-end gap-2 shrink-0 w-full sm:w-auto">
+            <div className="flex flex-wrap items-center gap-2 justify-end">
+              {onPreviewDailyPack && (
+                <button
+                  type="button"
+                  onClick={() => onPreviewDailyPack()}
+                  className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-border bg-card text-sm font-medium hover:bg-accent transition-colors"
+                >
+                  <Table2 size={16} />
+                  Preview daily CSV
+                </button>
+              )}
               <button
                 type="button"
-                onClick={() => onPreviewDailyPack()}
-                className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-border bg-card text-sm font-medium hover:bg-accent transition-colors"
+                onClick={() => void onExportDailyPack()}
+                disabled={isExporting}
+                className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-border bg-card text-sm font-medium hover:bg-accent transition-colors disabled:opacity-50"
               >
-                <Table2 size={16} />
-                Preview daily CSV
+                {isExporting ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    Preparing download…
+                  </>
+                ) : (
+                  <>
+                    <Download size={16} />
+                    Download full pack (CSV + photos)
+                  </>
+                )}
               </button>
-            )}
-            <button
-              type="button"
-              onClick={() => void onExportDailyPack()}
-              disabled={isExporting}
-              className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-border bg-card text-sm font-medium hover:bg-accent transition-colors disabled:opacity-50"
-            >
-              {isExporting ? (
-                <>
-                  <Loader2 size={16} className="animate-spin" />
-                  Packaging…
-                </>
-              ) : (
-                <>
-                  <Download size={16} />
-                  Today&apos;s pack (CSV + photos)
-                </>
-              )}
-            </button>
+            </div>
             {onRequestClearLocalData && (
               <button
                 type="button"
                 onClick={onRequestClearLocalData}
-                className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-destructive/40 bg-card text-destructive text-sm font-medium hover:bg-destructive/10 transition-colors"
+                title="Remove every inspection and saved data from this browser on this device"
+                className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-destructive/40 bg-card text-destructive text-sm font-medium hover:bg-destructive/10 transition-colors w-full sm:w-auto"
               >
                 <Trash2 size={16} />
                 Clear local data…
