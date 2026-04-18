@@ -1,8 +1,6 @@
 {
+  "bunVersion": "1.x",
   "rewrites": [
-    {
-      "source": "/uveye-api/:path*",
-      "destination": "https://us.api.uveye.app/:path*"
-    }
+    { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
