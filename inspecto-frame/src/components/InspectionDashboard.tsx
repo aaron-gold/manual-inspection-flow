@@ -1,5 +1,26 @@
-import React, { useState } from 'react';
-import { Car, Clock, CheckCircle, AlertTriangle, ChevronRight, Download, Loader2, Table2, Trash2 } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import {
+  Car,
+  Clock,
+  CheckCircle,
+  AlertTriangle,
+  ChevronRight,
+  Download,
+  Loader2,
+  Table2,
+  Trash2,
+  BarChart3,
+  Layers,
+} from 'lucide-react';
+import { damageInspectionSummaryCounts } from '@/lib/damageReportCsv';
+import type { Damage } from '@/lib/assistedInspectionModel';
+import { formatDurationSeconds, inspectionHasManualDamage } from '@/lib/inspectionTiming';
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from '@/components/ui/accordion';
 
 export type BodyType = 'sedan' | 'truck';
 
@@ -17,10 +38,17 @@ export interface InspectionRecord {
   createdAt: Date;
   status: 'in_progress' | 'completed';
   damageCount: number;
+  /** First qualifying in-app action (Start inspection, click, or part select). */
+  timerStartedAt?: Date;
+  /** When inspector marked complete in this browser. */
+  completedAt?: Date;
+  /** Seconds from `timerStartedAt` to `completedAt`; unset until completed. */
+  durationSeconds?: number;
 }
 
 interface Props {
   inspections: InspectionRecord[];
+  reviewById: Record<string, Record<string, unknown>>;
   /** Shown on CSV; not used for login. */
   inspectorName: string;
   onInspectorNameChange: (name: string) => void;
@@ -40,6 +68,7 @@ interface Props {
 
 export default function InspectionDashboard({
   inspections,
+  reviewById,
   inspectorName,
   onInspectorNameChange,
   onSelect,
@@ -53,8 +82,69 @@ export default function InspectionDashboard({
   onRequestClearLocalData,
 }: Props) {
   const [inspectionId, setInspectionId] = useState('');
+  const [mainTab, setMainTab] = useState<'inspections' | 'analytics'>('inspections');
   const inProgress = inspections.filter(i => i.status === 'in_progress');
   const completed = inspections.filter(i => i.status === 'completed');
+
+  const portfolio = useMemo(() => {
+    let totalRows = 0;
+    let approved = 0;
+    let rejected = 0;
+    let pending = 0;
+    let manualRows = 0;
+    let approvedAi = 0;
+    let inspectionsWithManual = 0;
+    let completedWithDuration = 0;
+    let sumDurationSec = 0;
+
+    for (const ins of inspections) {
+      const raw = reviewById[ins.id]?.damages as Damage[] | undefined;
+      if (!raw?.length) continue;
+      const c = damageInspectionSummaryCounts(raw);
+      totalRows += c.totalDamages;
+      approved += c.approved;
+      rejected += c.rejected;
+      pending += c.pending;
+      manualRows += c.manualRows;
+      approvedAi += c.approvedAi;
+      if (inspectionHasManualDamage(raw)) inspectionsWithManual += 1;
+      if (ins.status === 'completed' && typeof ins.durationSeconds === 'number') {
+        completedWithDuration += 1;
+        sumDurationSec += ins.durationSeconds;
+      }
+    }
+
+    const precisionPctStr =
+      totalRows > 0 ? `${Math.round((approved / totalRows) * 1000) / 10}%` : '—';
+    const recallDenom = approvedAi + manualRows;
+    const recallPctStr =
+      manualRows === 0
+        ? totalRows === 0
+          ? '—'
+          : '100%'
+        : recallDenom > 0
+          ? `${Math.round((approvedAi / recallDenom) * 1000) / 10}%`
+          : '—';
+    const completedN = inspections.filter((i) => i.status === 'completed').length;
+    const avgDurationStr =
+      completedWithDuration > 0
+        ? formatDurationSeconds(sumDurationSec / completedWithDuration)
+        : '—';
+
+    return {
+      inspectionCount: inspections.length,
+      totalRows,
+      approved,
+      rejected,
+      pending,
+      manualRows,
+      precisionPctStr,
+      recallPctStr,
+      inspectionsWithManual,
+      completedCount: completedN,
+      avgDurationStr,
+    };
+  }, [inspections, reviewById]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -82,7 +172,7 @@ export default function InspectionDashboard({
                   className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-border bg-card text-sm font-medium hover:bg-accent transition-colors"
                 >
                   <Table2 size={16} />
-                  Preview daily CSV
+                  Preview activity CSV
                 </button>
               )}
               <button
@@ -123,6 +213,110 @@ export default function InspectionDashboard({
           </p>
         )}
 
+        <div className="mb-6 flex gap-1 rounded-xl border border-border bg-muted/40 p-1">
+          <button
+            type="button"
+            onClick={() => setMainTab('inspections')}
+            className={`flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors sm:flex-none sm:px-5 ${
+              mainTab === 'inspections'
+                ? 'bg-card text-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            <Car size={16} className="shrink-0" aria-hidden />
+            Inspections
+          </button>
+          <button
+            type="button"
+            onClick={() => setMainTab('analytics')}
+            className={`flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors sm:flex-none sm:px-5 ${
+              mainTab === 'analytics'
+                ? 'bg-card text-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            <BarChart3 size={16} className="shrink-0" aria-hidden />
+            Analytics
+          </button>
+        </div>
+
+        {mainTab === 'analytics' ? (
+          <div className="space-y-6">
+            <div className="rounded-xl border border-border bg-card p-5 shadow-sm">
+              <h2 className="text-lg font-semibold text-foreground">Overall analytics</h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                All inspections stored in this browser ({portfolio.inspectionCount} total). Clearing local data
+                resets this view.
+              </p>
+              {portfolio.inspectionCount === 0 ? (
+                <p className="mt-4 text-sm text-muted-foreground">No saved inspections yet.</p>
+              ) : (
+                <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+                  <AnalyticsStat label="Inspections" value={String(portfolio.inspectionCount)} />
+                  <AnalyticsStat label="Completed (local)" value={String(portfolio.completedCount)} />
+                  <AnalyticsStat
+                    label="Total detections"
+                    value={String(portfolio.totalRows)}
+                    hint="Summed across vehicles"
+                  />
+                  <AnalyticsStat label="Approved" value={String(portfolio.approved)} />
+                  <AnalyticsStat label="Rejected" value={String(portfolio.rejected)} />
+                  <AnalyticsStat label="Pending" value={String(portfolio.pending)} />
+                  <AnalyticsStat
+                    label="Precision"
+                    value={portfolio.precisionPctStr}
+                    hint="Sum(approved) ÷ sum(all rows)"
+                  />
+                  <AnalyticsStat
+                    label="Recall"
+                    value={portfolio.recallPctStr}
+                    hint="Sum(approved AI) ÷ (sum(approved AI) + sum(manual rows))"
+                  />
+                  <AnalyticsStat
+                    label="Inspections w/ manual add"
+                    value={String(portfolio.inspectionsWithManual)}
+                    hint="At least one inspector-added damage row"
+                  />
+                  <AnalyticsStat
+                    label="Avg. review time"
+                    value={portfolio.avgDurationStr}
+                    hint="Completed inspections only; mm:ss"
+                  />
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-xl border border-dashed border-border bg-card/80 p-5 shadow-sm">
+              <div className="flex items-start gap-3">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted">
+                  <Layers size={20} className="text-muted-foreground" aria-hidden />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-sm font-semibold text-foreground">By part (fleet roll-up)</h3>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Coming soon — aggregated damage counts across all vehicles by panel.
+                  </p>
+                </div>
+              </div>
+              <Accordion type="single" collapsible className="mt-4 w-full">
+                <AccordionItem value="placeholder" className="border-border">
+                  <AccordionTrigger className="text-sm hover:no-underline">
+                    Placeholder: future part-level breakdown
+                  </AccordionTrigger>
+                  <AccordionContent>
+                    <p className="text-xs text-muted-foreground pb-2">
+                      This section will mirror inspection-level “by part” summaries, rolled up across every
+                      inspection in local storage.
+                    </p>
+                  </AccordionContent>
+                </AccordionItem>
+              </Accordion>
+            </div>
+          </div>
+        ) : null}
+
+        {mainTab === 'inspections' ? (
+          <>
         <div className="mb-6 p-4 rounded-xl border border-border bg-card shadow-sm">
           <h2 className="text-sm font-semibold text-foreground mb-1">Inspector label (optional)</h2>
           <p className="text-xs text-muted-foreground mb-3">
@@ -221,7 +415,19 @@ export default function InspectionDashboard({
             </p>
           </div>
         )}
+          </>
+        ) : null}
       </div>
+    </div>
+  );
+}
+
+function AnalyticsStat({ label, value, hint }: { label: string; value: string; hint?: string }) {
+  return (
+    <div className="rounded-lg border border-border bg-muted/20 px-3 py-3 text-center">
+      <div className="text-lg font-bold tabular-nums text-foreground">{value}</div>
+      <div className="text-[11px] font-medium text-muted-foreground mt-0.5">{label}</div>
+      {hint ? <div className="text-[10px] text-muted-foreground/90 mt-1 leading-tight">{hint}</div> : null}
     </div>
   );
 }
@@ -255,6 +461,12 @@ function InspectionCard({ inspection, onClick }: { inspection: InspectionRecord;
             <span className="flex items-center gap-1 text-destructive">
               <AlertTriangle size={11} />
               {inspection.damageCount} damage{inspection.damageCount !== 1 ? 's' : ''}
+            </span>
+          )}
+          {inspection.status === 'completed' && typeof inspection.durationSeconds === 'number' && (
+            <span className="flex items-center gap-1 text-primary">
+              <CheckCircle size={11} />
+              {formatDurationSeconds(inspection.durationSeconds)}
             </span>
           )}
         </div>

@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
-import type { BodyType } from './InspectionDashboard';
+import type { BodyType, InspectionRecord } from './InspectionDashboard';
 import CameraCapture from './CameraCapture';
 import type { CapturedPhotoEntry } from '@/types/capturedPhoto';
 import InspectionSummary from './InspectionSummary';
@@ -32,6 +32,8 @@ import {
 } from '@/lib/assistedInspectionModel';
 import { SEDAN_LAYOUT_BASE_PX } from '@/lib/sedanDiagramCalibration';
 import { DamageReportPreviewDialog } from '@/components/DamageReportPreviewDialog';
+import type { DamageReportTimingMeta } from '@/lib/damageReportCsv';
+import { allDamageRowsReviewed, formatDurationSeconds } from '@/lib/inspectionTiming';
 import {
   Dialog,
   DialogContent,
@@ -70,6 +72,7 @@ import {
   Truck,
   Table2,
   Play,
+  Timer,
 } from 'lucide-react';
 
 /** Same corner slugs as `buildCameraFramesFromResponse` (`artemis_leftFront_tread`, …). */
@@ -147,6 +150,10 @@ interface AssistedInspectionV3Props {
   initialCapturedPhotos?: CapturedPhotoEntry[];
   onPersistReviewState?: (state: Record<string, unknown>) => void;
   onCapturedPhotosChange?: (photos: CapturedPhotoEntry[]) => void;
+  /** Row from local dashboard (timer + completion live here). */
+  inspectionRecord?: InspectionRecord | null;
+  onTimerStart?: () => void;
+  onMarkInspectionComplete?: () => void;
 }
 
 /**
@@ -191,6 +198,9 @@ export default function AssistedInspectionV3({
   initialCapturedPhotos,
   onPersistReviewState,
   onCapturedPhotosChange,
+  inspectionRecord = null,
+  onTimerStart,
+  onMarkInspectionComplete,
 }: AssistedInspectionV3Props) {
   const [activePart, setActivePart] = useState<CarPart | null>(null);
   const [currentFrameIdx, setCurrentFrameIdx] = useState(0);
@@ -207,6 +217,49 @@ export default function AssistedInspectionV3({
   /** Tap photo: hide viewport chrome and, when available, swap to API full-frame image (no arrows). */
   const [photoReviewFocus, setPhotoReviewFocus] = useState(false);
   const isMobile = useIsMobile();
+  /** Drives live elapsed display while the review timer is running. */
+  const [timerTick, setTimerTick] = useState(0);
+
+  const bumpTimerIfNeeded = useCallback(() => {
+    if (!onTimerStart) return;
+    if (!inspectionRecord || inspectionRecord.status === 'completed' || inspectionRecord.timerStartedAt)
+      return;
+    onTimerStart();
+  }, [onTimerStart, inspectionRecord]);
+
+  useEffect(() => {
+    if (!inspectionRecord || inspectionRecord.status === 'completed' || !inspectionRecord.timerStartedAt)
+      return;
+    const t = window.setInterval(() => setTimerTick((n) => n + 1), 1000);
+    return () => window.clearInterval(t);
+  }, [inspectionRecord?.timerStartedAt, inspectionRecord?.status]);
+
+  const damageReportTiming = useMemo((): DamageReportTimingMeta => {
+    const ir = inspectionRecord;
+    return {
+      timerStartedAtIso: ir?.timerStartedAt?.toISOString() ?? null,
+      completedAtIso: ir?.completedAt?.toISOString() ?? null,
+      durationSeconds:
+        ir?.status === 'completed' && typeof ir.durationSeconds === 'number' ? ir.durationSeconds : null,
+      inspectionStatus: ir?.status ?? 'in_progress',
+    };
+  }, [inspectionRecord]);
+
+  const elapsedLiveSeconds = useMemo(() => {
+    const ir = inspectionRecord;
+    if (!ir?.timerStartedAt) return null;
+    if (ir.status === 'completed' && typeof ir.durationSeconds === 'number') return ir.durationSeconds;
+    return Math.max(0, Math.floor((Date.now() - ir.timerStartedAt.getTime()) / 1000));
+  }, [inspectionRecord, timerTick]);
+
+  const durationUiLabel = useMemo(() => {
+    const ir = inspectionRecord;
+    if (!ir?.timerStartedAt) return 'Not started';
+    if (ir.status === 'completed' && typeof ir.durationSeconds === 'number')
+      return `${formatDurationSeconds(ir.durationSeconds)} (completed)`;
+    if (elapsedLiveSeconds != null) return `${formatDurationSeconds(elapsedLiveSeconds)} (in progress)`;
+    return '—';
+  }, [inspectionRecord, elapsedLiveSeconds]);
 
   /** Vehicle map panel: keep the top-down diagram visible by default (mobile users otherwise saw only the parts list). */
   const [mapDiagramCollapsed, setMapDiagramCollapsed] = useState(false);
@@ -337,6 +390,7 @@ export default function AssistedInspectionV3({
   const flaggedCount = damages.filter(d => d.flagged).length;
 
   const selectPart = (part: CarPart, frameIdx?: number) => {
+    bumpTimerIfNeeded();
     setActivePart(part);
     setCurrentFrameIdx(frameIdx !== undefined ? frameIdx : 0);
     setSelectedDamageIdx(0);
@@ -492,12 +546,7 @@ export default function AssistedInspectionV3({
     return idx > 0;
   }, [activePart, partFrames, currentFrameIdx, partsWithDamage]);
 
-  const allDetectionsReviewed = useMemo(
-    () =>
-      damages.length > 0 &&
-      damages.every((d) => d.confirmed === true || d.confirmed === false),
-    [damages],
-  );
+  const allDetectionsReviewed = useMemo(() => allDamageRowsReviewed(damages), [damages]);
 
   useEffect(() => {
     if (allDetectionsReviewed && !wasAllDetectionsReviewedRef.current) {
@@ -507,6 +556,7 @@ export default function AssistedInspectionV3({
   }, [allDetectionsReviewed]);
 
   const handleStartInspection = useCallback(() => {
+    bumpTimerIfNeeded();
     const part = partsWithDamage[0];
     if (!part) return;
     const pfs = getFramesForPart(part, allFrames, damages);
@@ -520,7 +570,7 @@ export default function AssistedInspectionV3({
     setExpandedArea(part.area);
     selectPart(part, frameIdx);
     if (!isMobile) setSidebarOpen(true);
-  }, [partsWithDamage, allFrames, damages, isMobile, selectPart]);
+  }, [partsWithDamage, allFrames, damages, isMobile, selectPart, bumpTimerIfNeeded]);
 
   const getPartDamageCount = (partName: string) =>
     damages.filter(d => partNameMatches(partName, d.part)).length;
@@ -560,6 +610,8 @@ export default function AssistedInspectionV3({
         payload={payload}
         onBack={() => setShowSummary(false)}
         capturedPhotos={capturedPhotos}
+        durationUiLabel={durationUiLabel}
+        timing={damageReportTiming}
       />
     );
   }
@@ -749,7 +801,10 @@ export default function AssistedInspectionV3({
   );
 
   return (
-    <div className="flex flex-col h-dvh min-h-0 w-full bg-muted font-sans text-foreground overflow-hidden">
+    <div
+      className="flex flex-col h-dvh min-h-0 w-full bg-muted font-sans text-foreground overflow-hidden"
+      onPointerDownCapture={() => bumpTimerIfNeeded()}
+    >
       {/* Camera Capture Modal */}
       {showCameraCapture && (
         <CameraCapture
@@ -788,6 +843,7 @@ export default function AssistedInspectionV3({
         payload={payload}
         damages={damages}
         vehicleLabel={vehicleLabel}
+        timing={damageReportTiming}
       />
 
       <Dialog open={inspectionCompleteOpen} onOpenChange={setInspectionCompleteOpen}>
@@ -795,8 +851,8 @@ export default function AssistedInspectionV3({
           <DialogHeader>
             <DialogTitle>All detections reviewed</DialogTitle>
             <DialogDescription>
-              No detections are left to approve or reject. Open Summary &amp; stats from the header, or keep
-              browsing the vehicle map.
+              No detections are left to approve or reject. Use <strong>Mark complete</strong> in the header when
+              you are finished to freeze the timer for this browser, or keep browsing the vehicle map.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -854,6 +910,48 @@ export default function AssistedInspectionV3({
           </div>
         </div>
         <div className="flex items-center gap-2 lg:gap-3 shrink-0 flex-wrap justify-end">
+          <div
+            className={cn(
+              'flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 tabular-nums text-xs font-medium',
+              inspectionRecord?.timerStartedAt && inspectionRecord?.status !== 'completed'
+                ? 'border-amber-500/50 bg-amber-500/10 text-amber-950 dark:text-amber-100'
+                : 'border-border bg-muted/40 text-muted-foreground',
+            )}
+            title="Review timer (this device)"
+          >
+            <Timer size={14} className="shrink-0" aria-hidden />
+            <span>
+              {!inspectionRecord?.timerStartedAt
+                ? '—'
+                : formatDurationSeconds(
+                    inspectionRecord.status === 'completed' &&
+                      typeof inspectionRecord.durationSeconds === 'number'
+                      ? inspectionRecord.durationSeconds
+                      : (elapsedLiveSeconds ?? 0),
+                  )}
+            </span>
+            {inspectionRecord?.timerStartedAt && inspectionRecord.status !== 'completed' ? (
+              <span className="text-[10px] font-normal opacity-80">Live</span>
+            ) : null}
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            className="shrink-0 gap-1"
+            disabled={!allDetectionsReviewed || inspectionRecord?.status === 'completed' || !onMarkInspectionComplete}
+            onClick={() => onMarkInspectionComplete?.()}
+            title={
+              !allDetectionsReviewed
+                ? 'Approve or reject every detection row first'
+                : inspectionRecord?.status === 'completed'
+                  ? 'Already marked complete on this device'
+                  : 'Freeze timer and mark complete locally'
+            }
+          >
+            <CheckCircle size={14} className="shrink-0" aria-hidden />
+            {inspectionRecord?.status === 'completed' ? 'Completed' : 'Mark complete'}
+          </Button>
           <button
             type="button"
             onClick={() => setShowCameraCapture(true)}
@@ -977,7 +1075,7 @@ export default function AssistedInspectionV3({
             <LayoutGrid size={18} />
           </button>
         </div>
-        <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted-foreground">
           {summaryPortalUrl ? (
             <a
               href={summaryPortalUrl}
@@ -991,9 +1089,43 @@ export default function AssistedInspectionV3({
           ) : (
             <span />
           )}
-          <span className="shrink-0 tabular-nums text-foreground font-medium">
-            {reviewedParts.size}/{allParts.length} parts
-          </span>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <div
+              className={cn(
+                'inline-flex items-center gap-1 rounded-md border px-2 py-0.5 tabular-nums text-[11px] font-medium text-foreground',
+                inspectionRecord?.timerStartedAt && inspectionRecord?.status !== 'completed'
+                  ? 'border-amber-500/50 bg-amber-500/10'
+                  : 'border-border bg-muted/40',
+              )}
+            >
+              <Timer size={12} aria-hidden />
+              {!inspectionRecord?.timerStartedAt
+                ? '—'
+                : formatDurationSeconds(
+                    inspectionRecord.status === 'completed' &&
+                      typeof inspectionRecord.durationSeconds === 'number'
+                      ? inspectionRecord.durationSeconds
+                      : (elapsedLiveSeconds ?? 0),
+                  )}
+              {inspectionRecord?.timerStartedAt && inspectionRecord.status !== 'completed' ? (
+                <span className="text-[9px] font-normal opacity-80">live</span>
+              ) : null}
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              className="h-7 px-2 text-[11px] gap-1"
+              disabled={!allDetectionsReviewed || inspectionRecord?.status === 'completed' || !onMarkInspectionComplete}
+              onClick={() => onMarkInspectionComplete?.()}
+            >
+              <CheckCircle size={12} aria-hidden />
+              {inspectionRecord?.status === 'completed' ? 'Done' : 'Complete'}
+            </Button>
+            <span className="tabular-nums text-foreground font-medium">
+              {reviewedParts.size}/{allParts.length} parts
+            </span>
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           <div className="h-1.5 flex-1 min-w-[100px] bg-muted rounded-full overflow-hidden">

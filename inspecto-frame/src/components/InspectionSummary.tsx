@@ -14,6 +14,7 @@ import {
   Percent,
   Target,
   Crosshair,
+  Timer,
 } from 'lucide-react';
 import { generateInspectionPdf } from './InspectionPdfReport';
 import type { UveyeInspectionResponse } from '@/services/uveyeApi';
@@ -25,7 +26,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
-import { damageInspectionSummaryCounts } from '@/lib/damageReportCsv';
+import { damageInspectionSummaryCounts, type DamageReportTimingMeta } from '@/lib/damageReportCsv';
 
 interface Damage {
   id: number;
@@ -59,6 +60,8 @@ interface InspectionSummaryProps {
     timestamp: Date;
     captureId?: string;
   }[];
+  durationUiLabel: string;
+  timing: DamageReportTimingMeta;
 }
 
 type SummaryFilter =
@@ -105,6 +108,8 @@ export default function InspectionSummary({
   payload,
   onBack,
   capturedPhotos = [],
+  durationUiLabel,
+  timing,
 }: InspectionSummaryProps) {
   const [listFilter, setListFilter] = useState<SummaryFilter>('all');
   /** Part name → accordion open; empty means all closed until user expands. */
@@ -165,6 +170,7 @@ export default function InspectionSummary({
       damages,
       payload,
       capturedPhotos,
+      timing,
     });
   };
 
@@ -253,6 +259,15 @@ export default function InspectionSummary({
               icon={<Copy size={16} />}
               color={summaryMetrics.markedDuplicates > 0 ? 'text-blue-600 dark:text-blue-400' : 'text-muted-foreground'}
               hint="Rows marked duplicate"
+            />
+          </div>
+          <div className="grid grid-cols-1 gap-3 sm:max-w-md">
+            <StatCard
+              label="Review time (this device)"
+              value={durationUiLabel}
+              icon={<Timer size={16} />}
+              color="text-foreground"
+              hint="Starts on first tap or Start inspection; freezes when you mark complete locally"
             />
           </div>
         </div>

@@ -211,9 +211,19 @@ export function buildDamageReportData(
   };
 }
 
+/** Optional footer metrics for vehicle CSV / PDF alignment. */
+export type DamageReportTimingMeta = {
+  timerStartedAtIso?: string | null;
+  completedAtIso?: string | null;
+  /** `null` while in progress; integer seconds once marked complete in this browser. */
+  durationSeconds: number | null;
+  inspectionStatus: 'in_progress' | 'completed';
+};
+
 export function buildDamageReportCsv(
   payload: UveyeInspectionResponse,
   damages: Damage[],
+  timing?: DamageReportTimingMeta | null,
 ): string {
   const { meta, rows } = buildDamageReportData(payload, damages);
 
@@ -225,6 +235,21 @@ export function buildDamageReportCsv(
   lines.push(['Year', escapeCsvCell(meta.year)].join(','));
   if (meta.inspectionId) lines.push(['Inspection ID', escapeCsvCell(meta.inspectionId)].join(','));
   lines.push(['UVeye inspection link', escapeCsvCell(meta.uveyeLink)].join(','));
+  if (timing) {
+    lines.push(['Timer started (ISO)', escapeCsvCell(timing.timerStartedAtIso ?? '')].join(','));
+    lines.push(['Completed at (ISO)', escapeCsvCell(timing.completedAtIso ?? '')].join(','));
+    lines.push(
+      [
+        'Duration (seconds)',
+        escapeCsvCell(
+          timing.durationSeconds == null ? 'In progress' : String(timing.durationSeconds),
+        ),
+      ].join(','),
+    );
+    lines.push(
+      ['Local inspection status', escapeCsvCell(timing.inspectionStatus)].join(','),
+    );
+  }
   const s = damageInspectionSummaryCounts(damages);
   lines.push(['Total damages', escapeCsvCell(String(s.totalDamages))].join(','));
   lines.push(['Approved count', escapeCsvCell(String(s.approved))].join(','));

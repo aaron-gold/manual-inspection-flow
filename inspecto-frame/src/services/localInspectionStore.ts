@@ -29,18 +29,30 @@ export type PersistedBundle = {
 };
 
 export function serializeRecord(r: InspectionRecord): PersistedBundle["inspections"][number] {
+  const { createdAt, timerStartedAt, completedAt, durationSeconds, ...rest } = r;
   return {
-    ...r,
-    createdAt: r.createdAt.toISOString(),
-  };
+    ...rest,
+    createdAt: createdAt.toISOString(),
+    ...(timerStartedAt ? { timerStartedAt: timerStartedAt.toISOString() } : {}),
+    ...(completedAt ? { completedAt: completedAt.toISOString() } : {}),
+    ...(typeof durationSeconds === "number" ? { durationSeconds } : {}),
+  } as PersistedBundle["inspections"][number];
 }
 
 export function deserializeRecord(
   r: PersistedBundle["inspections"][number],
 ): InspectionRecord {
+  const row = r as PersistedBundle["inspections"][number] & {
+    timerStartedAt?: string;
+    completedAt?: string;
+    durationSeconds?: number;
+  };
   return {
-    ...r,
-    createdAt: new Date(r.createdAt),
+    ...row,
+    createdAt: new Date(row.createdAt),
+    timerStartedAt: row.timerStartedAt ? new Date(row.timerStartedAt) : undefined,
+    completedAt: row.completedAt ? new Date(row.completedAt) : undefined,
+    durationSeconds: typeof row.durationSeconds === "number" ? row.durationSeconds : undefined,
   };
 }
 

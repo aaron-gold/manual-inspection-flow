@@ -128,7 +128,17 @@ export default function Index() {
       setPayloads((prev) => ({ ...prev, [key]: response }));
       setInspections((prev) => {
         const without = prev.filter((i) => i.id !== key);
-        return [record, ...without];
+        const existing = prev.find((i) => i.id === key);
+        const merged = existing
+          ? {
+              ...record,
+              timerStartedAt: existing.timerStartedAt,
+              completedAt: existing.completedAt,
+              durationSeconds: existing.durationSeconds,
+              status: existing.status,
+            }
+          : record;
+        return [merged, ...without];
       });
       setCapturesById((prev) => (prev[key] ? prev : { ...prev, [key]: [] }));
       setView({ type: "inspection", id: key });
@@ -206,6 +216,36 @@ export default function Index() {
     [activeInspectionId, handleCaptureUpdate],
   );
 
+  const handleTimerStart = useCallback((inspectionId: string) => {
+    setInspections((prev) =>
+      prev.map((i) => {
+        if (i.id !== inspectionId || i.status === "completed" || i.timerStartedAt) return i;
+        return { ...i, timerStartedAt: new Date() };
+      }),
+    );
+  }, []);
+
+  const handleMarkInspectionComplete = useCallback((inspectionId: string) => {
+    setInspections((prev) =>
+      prev.map((i) => {
+        if (i.id !== inspectionId || i.status === "completed") return i;
+        const completedAt = new Date();
+        const start = i.timerStartedAt ?? completedAt;
+        const durationSeconds = Math.max(
+          0,
+          Math.round((completedAt.getTime() - start.getTime()) / 1000),
+        );
+        return {
+          ...i,
+          status: "completed" as const,
+          completedAt,
+          durationSeconds,
+          timerStartedAt: i.timerStartedAt ?? start,
+        };
+      }),
+    );
+  }, []);
+
   if (view.type === "inspection") {
     const payload = payloads[view.id];
     const inspection = inspections.find((i) => i.id === view.id);
@@ -237,6 +277,9 @@ export default function Index() {
           initialCapturedPhotos={initialCaptures}
           onPersistReviewState={persistActiveReview}
           onCapturedPhotosChange={captureChangeForActive}
+          inspectionRecord={inspection ?? null}
+          onTimerStart={() => handleTimerStart(view.id)}
+          onMarkInspectionComplete={() => handleMarkInspectionComplete(view.id)}
         />
       </div>
     );
@@ -252,6 +295,7 @@ export default function Index() {
         ) : (
           <InspectionDashboard
             inspections={inspections}
+            reviewById={reviewStateById}
             inspectorName={inspectorName}
             onInspectorNameChange={setInspectorName}
             onSelect={(id) => setView({ type: "inspection", id })}
@@ -298,10 +342,10 @@ export default function Index() {
       <Dialog open={dailyPreviewOpen} onOpenChange={setDailyPreviewOpen}>
         <DialogContent className="max-w-[min(1100px,95vw)] w-full max-h-[min(720px,85vh)] flex flex-col p-0 gap-0 overflow-hidden">
           <DialogHeader className="px-6 pt-6 pb-2 shrink-0">
-            <DialogTitle>Daily activity preview</DialogTitle>
+            <DialogTitle>Activity CSV preview</DialogTitle>
             <DialogDescription>
               Same columns as <code className="text-xs bg-muted px-1 rounded">daily-activity.csv</code> in the
-              full pack (CSV + photos)—local calendar day, no download required.
+              full pack (CSV + photos)—all inspections saved in this browser, no download required.
             </DialogDescription>
           </DialogHeader>
           <div className="px-6 pb-6 flex-1 min-h-0 flex flex-col gap-2">
@@ -311,7 +355,7 @@ export default function Index() {
             </div>
             <div className="flex-1 min-h-0 overflow-auto rounded-md border border-border">
               {dailyPreview.rows.length === 0 ? (
-                <p className="p-4 text-sm text-muted-foreground">No inspections retrieved for today yet.</p>
+                <p className="p-4 text-sm text-muted-foreground">No inspections in local storage yet.</p>
               ) : (
                 <table className="w-full text-xs border-collapse">
                   <thead>

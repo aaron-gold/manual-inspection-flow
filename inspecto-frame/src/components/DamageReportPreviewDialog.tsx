@@ -14,6 +14,7 @@ import {
   buildDamageReportData,
   damageReportFilename,
   downloadDamageReportCsv,
+  type DamageReportTimingMeta,
 } from '@/lib/damageReportCsv';
 import type { Damage } from '@/lib/assistedInspectionModel';
 import type { UveyeInspectionResponse } from '@/services/uveyeApi';
@@ -24,6 +25,7 @@ type Props = {
   payload: UveyeInspectionResponse;
   damages: Damage[];
   vehicleLabel?: string | null;
+  timing?: DamageReportTimingMeta | null;
 };
 
 export function DamageReportPreviewDialog({
@@ -32,6 +34,7 @@ export function DamageReportPreviewDialog({
   payload,
   damages,
   vehicleLabel,
+  timing = null,
 }: Props) {
   const { meta, rows } = useMemo(
     () => buildDamageReportData(payload, damages),
@@ -39,7 +42,7 @@ export function DamageReportPreviewDialog({
   );
 
   const handleDownload = () => {
-    const csv = buildDamageReportCsv(payload, damages);
+    const csv = buildDamageReportCsv(payload, damages, timing);
     downloadDamageReportCsv(damageReportFilename(payload), csv);
   };
 
@@ -85,6 +88,20 @@ export function DamageReportPreviewDialog({
                 '—'
               )}
             </dd>
+            {timing ? (
+              <>
+                <dt className="text-muted-foreground">Timer started (ISO)</dt>
+                <dd className="font-mono text-xs">{timing.timerStartedAtIso || '—'}</dd>
+                <dt className="text-muted-foreground">Completed at (ISO)</dt>
+                <dd className="font-mono text-xs">{timing.completedAtIso || '—'}</dd>
+                <dt className="text-muted-foreground">Duration</dt>
+                <dd className="font-mono text-xs">
+                  {timing.durationSeconds == null ? 'In progress' : `${timing.durationSeconds}s`}
+                </dd>
+                <dt className="text-muted-foreground">Local status</dt>
+                <dd>{timing.inspectionStatus}</dd>
+              </>
+            ) : null}
           </dl>
 
           <div className="overflow-x-auto rounded-md border border-border">

@@ -1,5 +1,7 @@
 import JSZip from "jszip";
 import type { InspectionRecord } from "@/components/InspectionDashboard";
+import type { Damage } from "@/lib/assistedInspectionModel";
+import { inspectionHasManualDamage } from "@/lib/inspectionTiming";
 import type { UveyeInspectionResponse } from "@/services/uveyeApi";
 import type { CapturedPhotoEntry } from "@/types/capturedPhoto";
 
@@ -7,18 +9,6 @@ function escapeCsvCell(s: string): string {
   const t = String(s ?? "");
   if (/[",\n\r]/.test(t)) return `"${t.replace(/"/g, '""')}"`;
   return t;
-}
-
-function startOfLocalDay(d: Date): number {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x.getTime();
-}
-
-function endOfLocalDay(d: Date): number {
-  const x = new Date(d);
-  x.setHours(23, 59, 59, 999);
-  return x.getTime();
 }
 
 type ReviewDamage = {
@@ -118,6 +108,10 @@ export const DAILY_EXPORT_HEADERS = [
   "vin",
   "color",
   "status",
+  "timer_started_at_iso",
+  "completed_at_iso",
+  "duration_seconds",
+  "has_manual_damage",
   "avi_damages",
   "approved",
   "rejected",
@@ -136,13 +130,8 @@ export function buildDailyActivityRows(input: DailyExportInput): {
   headers: string[];
   rows: DailyActivityRow[];
 } {
-  const t0 = startOfLocalDay(input.day);
-  const t1 = endOfLocalDay(input.day);
-
-  const filtered = input.inspections.filter((i) => {
-    const t = i.createdAt.getTime();
-    return t >= t0 && t <= t1;
-  });
+  /** All inspections in this browser’s saved list (not limited to calendar day). */
+  const filtered = input.inspections;
 
   const exportedAt = new Date().toISOString();
   const headers = [...DAILY_EXPORT_HEADERS];
@@ -155,6 +144,12 @@ export function buildDailyActivityRows(input: DailyExportInput): {
     const roll = damageRollup(review, ins.damageCount);
     const siteId = extractSiteId(payload);
     const groupId = extractGroupId(payload);
+    const dmgs = review?.damages as Damage[] | undefined;
+    const hasManual = inspectionHasManualDamage(Array.isArray(dmgs) ? dmgs : undefined);
+    const durationCell =
+      ins.status === "completed" && typeof ins.durationSeconds === "number"
+        ? String(ins.durationSeconds)
+        : "In progress";
 
     rows.push([
       input.inspectorName || "",
@@ -167,6 +162,10 @@ export function buildDailyActivityRows(input: DailyExportInput): {
       ins.vin,
       ins.color,
       ins.status,
+      ins.timerStartedAt?.toISOString() ?? "",
+      ins.completedAt?.toISOString() ?? "",
+      durationCell,
+      hasManual ? "1" : "0",
       String(roll.aviDamages),
       String(roll.approved),
       String(roll.rejected),
@@ -191,12 +190,7 @@ export async function buildDailyExportZip(input: DailyExportInput): Promise<Blob
   const lines: string[] = [headers.map(escapeCsvCell).join(",")];
   const capRoot = zip.folder("captured-photos");
 
-  const t0 = startOfLocalDay(input.day);
-  const t1 = endOfLocalDay(input.day);
-  const forZip = input.inspections.filter((i) => {
-    const t = i.createdAt.getTime();
-    return t >= t0 && t <= t1;
-  });
+  const forZip = input.inspections;
 
   let rowIdx = 0;
   for (const ins of forZip) {
@@ -225,9 +219,11 @@ export async function buildDailyExportZip(input: DailyExportInput): Promise<Blob
     [
       "Inspecto — daily export pack",
       "",
-      "- daily-activity.csv: columns match the in-app daily summary (damage rollups from review state when present).",
+      "- daily-activity.csv: one row per inspection saved in this browser (not limited to a single calendar day).",
       "- captured-photos/: manual captures; filenames listed align with capture_count.",
       "- avi_damages: AI-sourced detection rows; added: inspector-added (non-AI) rows.",
+      "- timer_started_at_iso / completed_at_iso / duration_seconds: local review timer (this browser).",
+      "- has_manual_damage: 1 if any inspector-added damage row exists in saved review state.",
       "- site_id / group_id: from UVeye payload when present (group_id uses organizationId or groupId).",
       "",
       `Inspector: ${input.inspectorName || "(not set)"}`,

@@ -1,7 +1,11 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import type { Damage } from '@/lib/assistedInspectionModel';
-import { buildDamageReportData, damageInspectionSummaryCounts } from '@/lib/damageReportCsv';
+import {
+  buildDamageReportData,
+  damageInspectionSummaryCounts,
+  type DamageReportTimingMeta,
+} from '@/lib/damageReportCsv';
 import { appendUveyeApiKeyToImageUrl, isUveyeApiImageUrl, type UveyeInspectionResponse } from '@/services/uveyeApi';
 
 interface PdfParams {
@@ -16,6 +20,7 @@ interface PdfParams {
     timestamp: Date;
     captureId?: string;
   }[];
+  timing?: DamageReportTimingMeta | null;
 }
 
 async function photoToDataUrl(photo: {
@@ -41,6 +46,7 @@ export async function generateInspectionPdf({
   damages,
   payload,
   capturedPhotos = [],
+  timing = null,
 }: PdfParams) {
   const doc = new jsPDF();
   const pageW = doc.internal.pageSize.getWidth();
@@ -77,6 +83,17 @@ export async function generateInspectionPdf({
 
   doc.setFontSize(9);
   doc.setFont('helvetica', 'normal');
+  const timingLines =
+    timing == null
+      ? []
+      : [
+          timing.durationSeconds == null
+            ? `Review time (this browser): in progress — timer started ${timing.timerStartedAtIso ?? '—'}`
+            : `Review time (this browser): ${timing.durationSeconds}s from timer start to local complete${
+                timing.completedAtIso ? ` (${timing.completedAtIso})` : ''
+              }`,
+          `Local inspection status: ${timing.inspectionStatus}`,
+        ];
   const stats = [
     `Total damages: ${s.totalDamages} (AI + camera / manual)`,
     `By source: ${s.aiRows} AI (pipelines or unspecified)  ·  ${s.manualRows} manual (inspector-added)`,
@@ -85,6 +102,7 @@ export async function generateInspectionPdf({
     `Recall: ${s.recallPctStr}  (100% with no inspector-added rows; else approved AI ÷ (approved AI + manual))`,
     `Approved: ${s.approved}  |  Reject: ${s.rejected}  |  Pending: ${s.pending}`,
     `Marked duplicates: ${s.markedDuplicates}  |  Flagged: ${s.flagged}`,
+    ...timingLines,
   ];
   stats.forEach(s => { doc.text(s, 14, y); y += 5; });
   y += 5;
