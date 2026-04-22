@@ -198,6 +198,21 @@ export function partNameMatches(uiPart: string, apiPart: string): boolean {
 }
 
 /**
+ * Pickup/truck-only panels — filtered out for sedans so the parts list and walk state stop
+ * suggesting "Bed Side" or "Tailgate" for cars that don't have one.
+ */
+export const TRUCK_ONLY_PART_NAMES: ReadonlySet<string> = new Set([
+  'Left Bed Side',
+  'Right Bed Side',
+  'Tailgate',
+  'Bed/Cargo',
+]);
+
+export function isTruckOnlyPartName(name: string): boolean {
+  return TRUCK_ONLY_PART_NAMES.has(name);
+}
+
+/**
  * Area label for exports: mirrors include side — "Left — Mirror" / "Right — Mirror".
  */
 export function areaLabelForDamageReport(partName: string): string {
@@ -206,4 +221,147 @@ export function areaLabelForDamageReport(partName: string): string {
   if (p.name === 'Left Mirror') return 'Left — Mirror';
   if (p.name === 'Right Mirror') return 'Right — Mirror';
   return p.area;
+}
+
+/* ──────────────────────────────────────────────
+   Walk-state (orientation): “you are here / next / what's left”
+   ────────────────────────────────────────────── */
+
+export interface AreaProgress {
+  area: Area;
+  done: number;
+  total: number;
+  /** First unreviewed part in walk order within this area, or null when the area is complete or empty. */
+  nextPartInArea: CarPart | null;
+}
+
+export interface WalkState {
+  /** Panel order mirrors `sortPartsByPanelOrder` — single source of truth for "next". */
+  orderedParts: CarPart[];
+  /** Reviewed parts that don't exist in `parts` are ignored. */
+  currentPart: CarPart | null;
+  /** First unreviewed part strictly after `currentPart` in walk order, wrapping when needed. */
+  nextPart: CarPart | null;
+  areaProgress: AreaProgress[];
+  totalDone: number;
+  totalParts: number;
+  /** When every part is reviewed, both current and next may be null — callers render an "all done" state. */
+  allDone: boolean;
+}
+
+export interface WalkStateOptions {
+  /**
+   * When true, `nextPart` (and each area's `nextPartInArea`) skips parts that have no damage —
+   * the orientation widget then points inspectors to the next damaged, unreviewed panel, which
+   * matches how the parts list treats damaged parts as the things that need attention.
+   */
+  onlyDamagedNext?: boolean;
+  /** Names of parts that have at least one damage row. Required when `onlyDamagedNext` is true. */
+  damagedPartNames?: ReadonlySet<string> | ReadonlyArray<string>;
+}
+
+/**
+ * Pure helper used by the orientation widget and diagram overlay.
+ *
+ * - `currentPart` tracks whatever the inspector has open in the viewer (may still be unreviewed).
+ * - `nextPart` is the first unreviewed part strictly *after* the current one in walk order; if the
+ *   current part is the last unreviewed in its area we wrap to the next area. When there is no
+ *   `activePart`, `nextPart` falls back to the first unreviewed part globally so the widget still
+ *   suggests where to start.
+ * - `areaProgress` is always returned in `ALL_AREAS` order — empty areas (no parts at all) are omitted.
+ * - Pass `options.onlyDamagedNext` + `damagedPartNames` to make the "next" suggestion only
+ *   include parts that have damage. Useful when the orientation should guide inspectors through
+ *   the damage review, not every panel on the car.
+ */
+export function computeWalkState(
+  parts: CarPart[],
+  reviewedPartNames: ReadonlySet<string> | ReadonlyArray<string>,
+  activePartName: string | null | undefined,
+  options?: WalkStateOptions,
+): WalkState {
+  const reviewed =
+    reviewedPartNames instanceof Set
+      ? reviewedPartNames
+      : new Set<string>(reviewedPartNames as ReadonlyArray<string>);
+  const damagedSet: ReadonlySet<string> | null = (() => {
+    if (!options?.damagedPartNames) return null;
+    return options.damagedPartNames instanceof Set
+      ? options.damagedPartNames
+      : new Set<string>(options.damagedPartNames as ReadonlyArray<string>);
+  })();
+  const filterToDamaged = !!options?.onlyDamagedNext && !!damagedSet;
+
+  const orderedParts = sortPartsByPanelOrder(parts);
+
+  const currentPart =
+    (activePartName && orderedParts.find((p) => p.name === activePartName)) || null;
+
+  /**
+   * Two-pass eligibility. First pass prefers damaged parts (when `onlyDamagedNext` is on); if
+   * that pass finds nothing, we fall back to any unreviewed part so the orientation's "Next"
+   * suggestion keeps pointing somewhere useful instead of vanishing mid-inspection.
+   */
+  const isEligible = (partName: string, strict: boolean): boolean => {
+    if (reviewed.has(partName)) return false;
+    if (strict && filterToDamaged && !damagedSet!.has(partName)) return false;
+    return true;
+  };
+
+  const firstEligibleFrom = (from: number, strict: boolean): CarPart | null => {
+    for (let i = from; i < orderedParts.length; i++) {
+      const p = orderedParts[i];
+      if (isEligible(p.name, strict)) return p;
+    }
+    return null;
+  };
+
+  /**
+   * Find the next eligible part — prefers the damaged-only strict pass, then relaxes if that
+   * returned nothing. For `currentPart`, we search after its index first (forward walk) and
+   * wrap to the start only if needed.
+   */
+  const findNext = (): CarPart | null => {
+    const searchFromIndex = (from: number, strict: boolean): CarPart | null => {
+      const afterCurrent = firstEligibleFrom(from, strict);
+      if (afterCurrent) return afterCurrent;
+      return firstEligibleFrom(0, strict);
+    };
+    const startIdx = currentPart
+      ? orderedParts.findIndex((p) => p.name === currentPart.name) + 1
+      : 0;
+    // Strict pass: only damaged (if requested). If onlyDamagedNext is off this already returns
+    // any unreviewed, so the relaxed pass is a no-op.
+    const strictPick = searchFromIndex(startIdx, true);
+    if (strictPick) return strictPick;
+    if (!filterToDamaged) return null;
+    return searchFromIndex(startIdx, false);
+  };
+
+  let nextPart = findNext();
+  if (nextPart && currentPart && nextPart.name === currentPart.name) nextPart = null;
+
+  const areaProgress: AreaProgress[] = [];
+  for (const area of ALL_AREAS) {
+    const areaParts = orderedParts.filter((p) => p.area === area);
+    if (areaParts.length === 0) continue;
+    const done = areaParts.filter((p) => reviewed.has(p.name)).length;
+    // Per-area "next" uses the same two-pass logic so zone suggestions don't vanish either.
+    const nextPartInArea =
+      areaParts.find((p) => isEligible(p.name, true)) ??
+      (filterToDamaged ? areaParts.find((p) => isEligible(p.name, false)) ?? null : null);
+    areaProgress.push({ area, done, total: areaParts.length, nextPartInArea });
+  }
+
+  const totalDone = orderedParts.filter((p) => reviewed.has(p.name)).length;
+  const totalParts = orderedParts.length;
+
+  return {
+    orderedParts,
+    currentPart,
+    nextPart,
+    areaProgress,
+    totalDone,
+    totalParts,
+    allDone: totalParts > 0 && totalDone === totalParts,
+  };
 }

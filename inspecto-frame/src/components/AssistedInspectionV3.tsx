@@ -23,13 +23,16 @@ import {
   ALL_AREAS,
   applyDefaultApprovedForManualDamages,
   CAR_PARTS,
+  computeWalkState,
   isSyntheticDamageFrameId,
+  isTruckOnlyPartName,
   partNameMatches,
   sortPartsByPanelOrder,
   type Area,
   type CarPart,
   type Damage,
 } from '@/lib/assistedInspectionModel';
+import { InspectionOrientation } from '@/components/InspectionOrientation';
 import { SEDAN_LAYOUT_BASE_PX } from '@/lib/sedanDiagramCalibration';
 import { DamageReportPreviewDialog } from '@/components/DamageReportPreviewDialog';
 import type { DamageReportTimingMeta } from '@/lib/damageReportCsv';
@@ -74,6 +77,24 @@ import {
   Play,
   Timer,
 } from 'lucide-react';
+
+/** Viewport image when a manual row has no evidence photo (SVG data URL). */
+const MANUAL_DAMAGE_NO_PHOTO_PLACEHOLDER_IMAGE =
+  'data:image/svg+xml;charset=utf-8,' +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540"><rect fill="#1e293b" width="100%" height="100%"/><text x="480" y="260" fill="#94a3b8" font-family="system-ui,sans-serif" font-size="22" text-anchor="middle">Missed damage (no photo)</text><text x="480" y="295" fill="#64748b" font-family="system-ui,sans-serif" font-size="14" text-anchor="middle">Part and damage are still logged for the report</text></svg>`,
+  );
+
+/**
+ * Viewport image when the active part has no damages at all. Shown instead of the full
+ * walk-around frames (which used to be the fallback) — inspectors asked for a clean "nothing
+ * to review here" state so they don't mistake generic walk imagery for part-specific evidence.
+ */
+const NO_DAMAGE_PLACEHOLDER_IMAGE =
+  'data:image/svg+xml;charset=utf-8,' +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540"><rect fill="#0f172a" width="100%" height="100%"/><circle cx="480" cy="230" r="54" fill="none" stroke="#10b981" stroke-width="5"/><path d="M454 232 l20 20 l38 -42" fill="none" stroke="#10b981" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/><text x="480" y="330" fill="#e2e8f0" font-family="system-ui,sans-serif" font-size="22" text-anchor="middle" font-weight="600">No damage detected</text><text x="480" y="360" fill="#94a3b8" font-family="system-ui,sans-serif" font-size="14" text-anchor="middle">Use \u201CMissed damage\u201D to add a capture if needed.</text></svg>`,
+  );
 
 /** Same corner slugs as `buildCameraFramesFromResponse` (`artemis_leftFront_tread`, …). */
 const PART_NAME_TO_ARTEMIS_CORNER: Partial<Record<string, string>> = {
@@ -124,15 +145,10 @@ function getFramesForPart(
       return cornerFrames.length > 0 ? cornerFrames : [];
     }
   }
-  // No detections yet: interior uses Apollo later — do not fall back to all exterior frames
-  if (part.area === 'Interior') {
-    return [];
-  }
-  /** Tires / tire walls: no UVeye detections for this corner — do not show all four Artemis corners + exterior. */
-  if (artemisCorner) {
-    return [];
-  }
-  return allFrames;
+  // No detections: return nothing and let the viewport fall back to the "no damage" placeholder.
+  // We used to return `allFrames` here as a walk-around tour, but inspectors asked for a clean
+  // empty state so generic frames aren't confused for part-specific evidence.
+  return [];
 }
 
 /* ──────────────────────────────────────────────
@@ -261,8 +277,14 @@ export default function AssistedInspectionV3({
     return '—';
   }, [inspectionRecord, elapsedLiveSeconds]);
 
-  /** Vehicle map panel: keep the top-down diagram visible by default (mobile users otherwise saw only the parts list). */
+  /**
+   * Sidebar section collapse — each of the three panels (zone progress, diagram, parts) has its
+   * own chevron header so the inspector can hide whichever they're not using. Keeping the
+   * diagram visible by default because mobile users otherwise saw only the parts list; the other
+   * two also default to open.
+   */
   const [mapDiagramCollapsed, setMapDiagramCollapsed] = useState(false);
+  const [mapPartsCollapsed, setMapPartsCollapsed] = useState(false);
 
   /** When false on mobile, part title + damage strip collapse to a thin bar so the image fills the screen. */
   const [partDetailExpanded, setPartDetailExpanded] = useState(
@@ -278,6 +300,12 @@ export default function AssistedInspectionV3({
   const [damageReportPreviewOpen, setDamageReportPreviewOpen] = useState(false);
   const [inspectionCompleteOpen, setInspectionCompleteOpen] = useState(false);
   const wasAllDetectionsReviewedRef = useRef(false);
+  /** Shown after Approve/Reject on the last walk image (every click while work remains; once when fully done). */
+  const [lastWalkImageDialog, setLastWalkImageDialog] = useState<{
+    open: boolean;
+    variant: 'all_done' | 'still_pending';
+    pendingCount: number;
+  }>({ open: false, variant: 'still_pending', pendingCount: 0 });
 
   // Damage review navigation
   const [selectedDamageIdx, setSelectedDamageIdx] = useState(0);
@@ -295,10 +323,14 @@ export default function AssistedInspectionV3({
   const summaryPortalUrl = useMemo(() => buildUveyePortalSummaryUrl(payload), [payload]);
 
   const [damages, setDamages] = useState<Damage[]>([]);
+  /** False until payload→damages sync runs (empty `[]` must not count as “all reviewed”). */
+  const [damagesReady, setDamagesReady] = useState(false);
   const didHydrateReview = useRef(false);
 
   useEffect(() => {
     didHydrateReview.current = false;
+    setDamagesReady(false);
+    wasAllDetectionsReviewedRef.current = false;
   }, [payload]);
 
   useEffect(() => {
@@ -311,6 +343,7 @@ export default function AssistedInspectionV3({
     } else {
       setDamages(fresh);
     }
+    setDamagesReady(true);
   }, [payload, allFrames, frameImages, initialReviewState]);
 
   useEffect(() => {
@@ -344,7 +377,18 @@ export default function AssistedInspectionV3({
     return [...damages.filter((d) => d.frameId !== '__diagram_test__'), ...DIAGRAM_TEST_DAMAGES];
   }, [damages]);
 
-  const allParts = [...CAR_PARTS, ...customParts];
+  /**
+   * Hide pickup-only panels (Bed Side / Tailgate / Bed/Cargo) when the vehicle is a sedan so the
+   * parts list, walk state, and zone progress all stop surfacing them. Memoised so downstream
+   * memos that depend on it don't re-fire every render.
+   */
+  const allParts = useMemo(() => {
+    const baseParts =
+      vehicleType === 'sedan'
+        ? CAR_PARTS.filter((p) => !isTruckOnlyPartName(p.name))
+        : CAR_PARTS;
+    return [...baseParts, ...customParts];
+  }, [vehicleType, customParts]);
   const partNames = useMemo(() => allParts.map((p) => p.name), [allParts]);
 
   const inspectorDamageTypesFromPayload = useMemo(() => {
@@ -368,15 +412,39 @@ export default function AssistedInspectionV3({
     if (pfs.length > 0) return { partFrames: pfs, viewportFrameImages: frameImages };
     const cap = damages.find(
       (d) =>
-        partNameMatches(activePart.name, d.part) && (d.captureDataUrl?.trim() || d.captureImageUrl?.trim()),
+        partNameMatches(activePart.name, d.part) &&
+        !d.ai &&
+        isSyntheticDamageFrameId(d.frameId),
     );
-    const url = (cap?.captureDataUrl ?? cap?.captureImageUrl)?.trim();
-    if (!url) return { partFrames: pfs, viewportFrameImages: frameImages };
-    const id = '__manual_evidence__';
-    return {
-      partFrames: [{ id, camera: 'Inspector photo', frameNum: 1 }],
-      viewportFrameImages: { ...frameImages, [id]: url },
-    };
+    if (cap) {
+      const url = (cap.captureDataUrl ?? cap.captureImageUrl)?.trim();
+      if (url) {
+        const id = '__manual_evidence__';
+        return {
+          partFrames: [{ id, camera: 'Inspector photo', frameNum: 1 }],
+          viewportFrameImages: { ...frameImages, [id]: url },
+        };
+      }
+      const id = '__manual_no_photo__';
+      return {
+        partFrames: [{ id, camera: 'Missed damage (no photo)', frameNum: 1 }],
+        viewportFrameImages: { ...frameImages, [id]: MANUAL_DAMAGE_NO_PHOTO_PLACEHOLDER_IMAGE },
+      };
+    }
+    /**
+     * No UVeye frames + no manual capture for this part. If the part has no damages at all,
+     * show the "no damage detected" placeholder. (If it has damages but no usable frames —
+     * e.g. stale frame ids — keep partFrames empty so the existing UI handles that case.)
+     */
+    const partHasAnyDamage = damages.some((d) => partNameMatches(activePart.name, d.part));
+    if (!partHasAnyDamage) {
+      const id = '__no_damage__';
+      return {
+        partFrames: [{ id, camera: 'No damage detected', frameNum: 1 }],
+        viewportFrameImages: { ...frameImages, [id]: NO_DAMAGE_PLACEHOLDER_IMAGE },
+      };
+    }
+    return { partFrames: pfs, viewportFrameImages: frameImages };
   }, [activePart, allFrames, damages, frameImages]);
   const currentFrame = partFrames[currentFrameIdx] || null;
 
@@ -407,11 +475,6 @@ export default function AssistedInspectionV3({
     setDamages(damages.map(d => (d.id === id ? { ...d, flagged: !d.flagged } : d)));
   };
 
-  /** Per-detection review; each damage has `frameId` so counts reflect findings, not panels. */
-  const setDamageConfirmed = useCallback((id: number, confirmed: boolean) => {
-    setDamages(prev => prev.map(d => (d.id === id ? { ...d, confirmed } : d)));
-  }, []);
-
   // When the visible frame changes, select the first detection for that frame so Approve/Reject match the image.
   useEffect(() => {
     if (!activePart || !currentFrame || partDamages.length === 0) return;
@@ -428,20 +491,91 @@ export default function AssistedInspectionV3({
     [allParts, damages],
   );
 
+  /**
+   * Names of parts that have at least one damage row. Drives the orientation's "next" suggestion
+   * so the inspector is always pointed at the next damaged panel — undamaged parts are skipped.
+   */
+  const damagedPartNames = useMemo(() => {
+    const set = new Set<string>();
+    for (const d of damages) {
+      for (const p of allParts) {
+        if (partNameMatches(p.name, d.part)) set.add(p.name);
+      }
+    }
+    return set;
+  }, [damages, allParts]);
+
+  /**
+   * Walk-state powers the InspectionOrientation widget + the diagram overlay.
+   * `currentPart` follows whatever the inspector has open; `nextPart` is the next unreviewed
+   * DAMAGED part in walk order — matches how the parts list highlights damaged panels as the
+   * things that need review.
+   */
+  const walkState = useMemo(
+    () =>
+      computeWalkState(allParts, reviewedParts, activePart?.name ?? null, {
+        onlyDamagedNext: true,
+        damagedPartNames,
+      }),
+    [allParts, reviewedParts, activePart?.name, damagedPartNames],
+  );
+
+  /**
+   * Brief glow on a zone pill the moment it transitions to fully-reviewed.
+   * Auto-clears so the user gets a non-overlay cue for "Front side complete" without ever
+   * obscuring the inspection image.
+   */
+  const [recentlyCompletedArea, setRecentlyCompletedArea] = useState<Area | null>(null);
+  const previousAreaDoneRef = useRef<Map<Area, boolean>>(new Map());
+  useEffect(() => {
+    let justCompleted: Area | null = null;
+    const next = new Map<Area, boolean>();
+    for (const ap of walkState.areaProgress) {
+      const isDone = ap.total > 0 && ap.done === ap.total;
+      next.set(ap.area, isDone);
+      const wasDone = previousAreaDoneRef.current.get(ap.area) ?? false;
+      if (isDone && !wasDone) justCompleted = ap.area;
+    }
+    previousAreaDoneRef.current = next;
+    if (justCompleted) {
+      setRecentlyCompletedArea(justCompleted);
+      const t = window.setTimeout(() => setRecentlyCompletedArea(null), 2400);
+      return () => window.clearTimeout(t);
+    }
+  }, [walkState.areaProgress]);
+
+  const handleSelectPartByName = useCallback(
+    (name: string) => {
+      const part = allParts.find((p) => p.name === name);
+      if (part) {
+        setExpandedArea(part.area);
+        selectPart(part);
+      }
+    },
+    // selectPart is defined inline (closure) — re-created each render, but allParts is stable per render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [allParts],
+  );
+
+  const handleSelectArea = useCallback((area: Area) => {
+    setExpandedArea(area);
+    if (isMobile) setSidebarOpen(true);
+  }, [isMobile]);
+
   const nextFrameOrPart = useCallback(() => {
     if (!activePart || partFrames.length === 0) return;
     if (currentFrameIdx < partFrames.length - 1) {
-      setCurrentFrameIdx(i => i + 1);
+      setCurrentFrameIdx((i) => i + 1);
       return;
     }
-    const idx = partsWithDamage.findIndex(p => p.name === activePart.name);
+    const idx = partsWithDamage.findIndex((p) => p.name === activePart.name);
     if (idx >= 0 && idx < partsWithDamage.length - 1) {
       const next = partsWithDamage[idx + 1];
       setActivePart(next);
       setCurrentFrameIdx(0);
       setSelectedDamageIdx(0);
       setViewportZoom(1);
-      setReviewedParts(prev => new Set(prev).add(next.name));
+      setReviewedParts((prev) => new Set(prev).add(next.name));
     }
   }, [activePart, partFrames.length, currentFrameIdx, partsWithDamage]);
 
@@ -467,10 +601,37 @@ export default function AssistedInspectionV3({
   /** Approve/reject then advance to the next frame or part (same as the image “next” chevron). */
   const handleConfirmAndAdvance = useCallback(
     (id: number, confirmed: boolean) => {
-      setDamageConfirmed(id, confirmed);
+      const lastPart = partsWithDamage[partsWithDamage.length - 1];
+      const atGlobalLast =
+        damagesReady &&
+        activePart &&
+        lastPart &&
+        activePart.name === lastPart.name &&
+        partFrames.length > 0 &&
+        currentFrameIdx === partFrames.length - 1;
+
+      setDamages((prev) => {
+        const next = prev.map((d) => (d.id === id ? { ...d, confirmed } : d));
+        if (atGlobalLast) {
+          const pendingAfter = next.filter((d) => d.confirmed == null).length;
+          queueMicrotask(() => {
+            setLastWalkImageDialog({
+              open: true,
+              variant: pendingAfter === 0 ? 'all_done' : 'still_pending',
+              pendingCount: pendingAfter,
+            });
+          });
+        }
+        return next;
+      });
       nextFrameOrPart();
     },
-    [setDamageConfirmed, nextFrameOrPart],
+    [damagesReady, activePart, partsWithDamage, partFrames.length, currentFrameIdx, nextFrameOrPart],
+  );
+
+  const pendingDetectionCount = useMemo(
+    () => damages.filter((d) => d.confirmed == null).length,
+    [damages],
   );
 
   const viewportImageSrc = useMemo(() => {
@@ -546,14 +707,21 @@ export default function AssistedInspectionV3({
     return idx > 0;
   }, [activePart, partFrames, currentFrameIdx, partsWithDamage]);
 
-  const allDetectionsReviewed = useMemo(() => allDamageRowsReviewed(damages), [damages]);
+  const allDetectionsReviewed = useMemo(() => {
+    if (!damagesReady) return false;
+    return allDamageRowsReviewed(damages);
+  }, [damagesReady, damages]);
 
   useEffect(() => {
-    if (allDetectionsReviewed && !wasAllDetectionsReviewedRef.current) {
+    if (
+      allDetectionsReviewed &&
+      !wasAllDetectionsReviewedRef.current &&
+      damages.length > 0
+    ) {
       setInspectionCompleteOpen(true);
     }
     wasAllDetectionsReviewedRef.current = allDetectionsReviewed;
-  }, [allDetectionsReviewed]);
+  }, [allDetectionsReviewed, damages.length]);
 
   const handleStartInspection = useCallback(() => {
     bumpTimerIfNeeded();
@@ -618,41 +786,76 @@ export default function AssistedInspectionV3({
 
   const renderVehicleMapSidebar = () => (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      {/* Toolbar stays fixed; diagram + parts share one scroll (full diagram when shown — never clipped in its own scroll box). */}
+      {/* Thin title bar — per-section collapse toggles live in each section's own chevron header. */}
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-2">
         <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Vehicle Map</span>
-        <button
-          type="button"
-          onClick={() => setMapDiagramCollapsed((v) => !v)}
-          className="shrink-0 rounded-md px-2 py-1 text-[11px] font-medium text-primary hover:bg-primary/10"
-        >
-          {mapDiagramCollapsed ? 'Show diagram' : 'Hide diagram'}
-        </button>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch] touch-pan-y">
-        {!mapDiagramCollapsed && (
-          <div className="border-b border-border px-2 pb-4 pt-1">
-            <div className="flex justify-center">
-              <MiniCarDiagram
-                activePart={activePart}
-                damages={damagesWithDiagramTest}
-                vehicleType={vehicleType}
-                onSelectPartByName={(name) => {
-                  const part = allParts.find((p) => p.name === name);
-                  if (part) {
-                    setExpandedArea(part.area);
-                    selectPart(part);
-                  }
-                }}
-              />
-            </div>
-          </div>
-        )}
-        <div className="px-3 py-2">
-          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Parts</span>
+        {/* 1. Progress by zone — has its own internal collapse chevron inside the component. */}
+        <div className="border-b border-border px-3 pb-3 pt-3">
+          <InspectionOrientation.ZoneProgress
+            state={walkState}
+            recentlyCompletedArea={recentlyCompletedArea}
+            onSelectPart={handleSelectPartByName}
+            onSelectArea={handleSelectArea}
+          />
         </div>
-        <div className="space-y-0.5 px-2 pb-4">
+        {/* 2. Diagram — chevron header toggles visibility; matches the pattern used by ZoneProgress. */}
+        <div className="border-b border-border">
+          <button
+            type="button"
+            onClick={() => setMapDiagramCollapsed((v) => !v)}
+            aria-expanded={!mapDiagramCollapsed}
+            className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-accent transition-colors"
+          >
+            <span className="inline-flex items-center gap-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              <ChevronDown
+                size={12}
+                aria-hidden
+                className={cn('transition-transform', mapDiagramCollapsed && '-rotate-90')}
+              />
+              Diagram
+            </span>
+          </button>
+          {!mapDiagramCollapsed && (
+            <div className="px-2 pb-4 pt-1">
+              <div className="flex justify-center">
+                <MiniCarDiagram
+                  activePart={activePart}
+                  damages={damagesWithDiagramTest}
+                  vehicleType={vehicleType}
+                  currentPartName={walkState.currentPart?.name ?? null}
+                  nextPartName={walkState.nextPart?.name ?? null}
+                  onSelectPartByName={(name) => {
+                    const part = allParts.find((p) => p.name === name);
+                    if (part) {
+                      setExpandedArea(part.area);
+                      selectPart(part);
+                    }
+                  }}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+        {/* 3. Parts — chevron header toggles the full area/part list. */}
+        <button
+          type="button"
+          onClick={() => setMapPartsCollapsed((v) => !v)}
+          aria-expanded={!mapPartsCollapsed}
+          className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-accent transition-colors"
+        >
+          <span className="inline-flex items-center gap-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            <ChevronDown
+              size={12}
+              aria-hidden
+              className={cn('transition-transform', mapPartsCollapsed && '-rotate-90')}
+            />
+            Parts
+          </span>
+        </button>
+        <div className={cn('space-y-0.5 px-2 pb-4', mapPartsCollapsed && 'hidden')}>
           {ALL_AREAS.map((area) => {
             const areaParts = sortPartsByPanelOrder(allParts.filter((p) => p.area === area));
             const areaHasDamage = areaParts.some((p) => getPartHasDamage(p.name));
@@ -753,7 +956,7 @@ export default function AssistedInspectionV3({
                           type="text"
                           value={newPartName}
                           onChange={(e) => setNewPartName(e.target.value)}
-                          placeholder="Part name..."
+                          placeholder="Type any panel name (UVeye or custom)…"
                           autoFocus
                           onKeyDown={(e) => e.key === 'Enter' && addCustomPart(area)}
                           className="w-full px-2 py-1.5 text-xs rounded-md border border-input bg-background text-foreground placeholder:text-muted-foreground"
@@ -787,7 +990,7 @@ export default function AssistedInspectionV3({
                         }}
                         className="w-full flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground transition-colors mt-0.5"
                       >
-                        <Plus size={10} /> Add Part
+                        <Plus size={10} /> Add custom part
                       </button>
                     )}
                   </div>
@@ -814,6 +1017,7 @@ export default function AssistedInspectionV3({
           onCapture={(capturePayload) => {
             const ts = new Date();
             setCapturedPhotos((prev) => [...prev, { ...capturePayload, timestamp: ts }]);
+            const hasPhoto = Boolean(capturePayload.dataUrl?.trim());
             setDamages((prev) => [
               ...prev,
               {
@@ -824,11 +1028,11 @@ export default function AssistedInspectionV3({
                 ai: false,
                 x: 50,
                 y: 50,
-                frameId: '__manual_capture__',
+                frameId: hasPhoto ? '__manual_capture__' : '__manual_no_photo__',
                 confirmed: true,
                 damageName: capturePayload.damageType,
                 captureId: capturePayload.captureId,
-                captureDataUrl: capturePayload.dataUrl,
+                ...(hasPhoto ? { captureDataUrl: capturePayload.dataUrl } : {}),
               },
             ]);
             setShowCameraCapture(false);
@@ -859,6 +1063,70 @@ export default function AssistedInspectionV3({
             <Button type="button" onClick={() => setInspectionCompleteOpen(false)}>
               Done
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={lastWalkImageDialog.open}
+        onOpenChange={(open) => {
+          if (!open) setLastWalkImageDialog((s) => ({ ...s, open: false }));
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {lastWalkImageDialog.variant === 'all_done'
+                ? 'Inspection walk complete'
+                : 'Still reviewing detections'}
+            </DialogTitle>
+            <DialogDescription className="text-left space-y-2">
+              {lastWalkImageDialog.variant === 'all_done' ? (
+                <>
+                  <span className="block text-foreground">
+                    Congratulations — you have finished reviewing every detection for this inspection (approve or
+                    reject on each row).
+                  </span>
+                  <span className="block text-muted-foreground text-sm">
+                    Open the summary report when you are ready to see the full picture, or keep browsing the vehicle
+                    map.
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className="block text-foreground">
+                    You used Approve or Reject on the <strong>last walk-around image</strong> for the last panel in
+                    order, but review is not finished yet.
+                  </span>
+                  <span className="block text-destructive font-medium">
+                    <strong>{lastWalkImageDialog.pendingCount}</strong>{' '}
+                    {lastWalkImageDialog.pendingCount === 1
+                      ? 'detection still needs approve or reject.'
+                      : 'detections still need approve or reject.'}
+                  </span>
+                  <span className="block text-muted-foreground text-sm">
+                    Use the vehicle map or parts list to open panels with pending rows, and use frame dots or Previous
+                    if you skipped camera angles on any panel.
+                  </span>
+                </>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button type="button" variant="secondary" onClick={() => setLastWalkImageDialog((s) => ({ ...s, open: false }))}>
+              {lastWalkImageDialog.variant === 'all_done' ? 'Stay here' : 'OK'}
+            </Button>
+            {lastWalkImageDialog.variant === 'all_done' ? (
+              <Button
+                type="button"
+                onClick={() => {
+                  setLastWalkImageDialog((s) => ({ ...s, open: false }));
+                  setShowSummary(true);
+                }}
+              >
+                Open summary report
+              </Button>
+            ) : null}
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -903,7 +1171,7 @@ export default function AssistedInspectionV3({
                   className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
                 >
                   <ExternalLink size={12} className="shrink-0" />
-                  Open inspection in UVeye (summary)
+                  UVeye inspection
                 </a>
               )}
             </div>
@@ -976,15 +1244,6 @@ export default function AssistedInspectionV3({
           >
             <Table2 size={14} /> Damage report
           </button>
-          <div className="text-right">
-            <p className="text-xs font-semibold text-foreground">{reviewedParts.size} of {allParts.length} parts</p>
-            <div className="w-32 h-1.5 bg-muted rounded-full mt-1 overflow-hidden">
-              <div
-                className="h-full bg-primary rounded-full transition-all"
-                style={{ width: `${(reviewedParts.size / allParts.length) * 100}%` }}
-              />
-            </div>
-          </div>
           <div className="flex flex-wrap gap-2 text-xs">
             <span className="bg-accent text-accent-foreground px-2 py-1 rounded-md font-medium">{confirmedCount} ✓</span>
             <span className="bg-destructive/10 text-destructive px-2 py-1 rounded-md font-medium">{dismissedCount} ✗</span>
@@ -1009,6 +1268,18 @@ export default function AssistedInspectionV3({
             {sidebarOpen ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}
           </button>
         </div>
+      </div>
+
+      {/* Desktop orientation row — pulled out of the main header so the vehicle title and action
+          buttons have room. Thin bar, no image overlap. Hidden on mobile (mobile uses its own
+          compact orientation row inside the stacked header). */}
+      <div className="hidden md:flex items-center justify-end gap-3 px-5 py-1.5 bg-card border-b border-border shrink-0">
+        <InspectionOrientation.DesktopStrip
+          state={walkState}
+          onSelectPart={handleSelectPartByName}
+          remainingCount={pendingDetectionCount}
+          remainingLabel="to review"
+        />
       </div>
 
       {/* Mobile header — stacked rows, icon actions */}
@@ -1122,18 +1393,19 @@ export default function AssistedInspectionV3({
               <CheckCircle size={12} aria-hidden />
               {inspectionRecord?.status === 'completed' ? 'Done' : 'Complete'}
             </Button>
-            <span className="tabular-nums text-foreground font-medium">
-              {reviewedParts.size}/{allParts.length} parts
-            </span>
           </div>
         </div>
+        {/* Orientation: lives in the EXISTING mobile header (no new row beyond what was already here for parts count). Never overlays the image. */}
+        <InspectionOrientation.MobileCompact
+          state={walkState}
+          onSelectPart={handleSelectPartByName}
+          remainingCount={pendingDetectionCount}
+          remainingLabel="to review"
+        />
         <div className="flex flex-wrap items-center gap-1.5">
-          <div className="h-1.5 flex-1 min-w-[100px] bg-muted rounded-full overflow-hidden">
-            <div
-              className="h-full bg-primary rounded-full transition-all"
-              style={{ width: `${(reviewedParts.size / allParts.length) * 100}%` }}
-            />
-          </div>
+          {/* Legacy full-width progress bar removed — overall progress now lives in the sidebar's
+              ZoneProgress (which collapses to a single bar). The damage-state chips below stay
+              because they're not duplicated anywhere else. */}
           <span className="text-[10px] bg-accent text-accent-foreground px-1.5 py-0.5 rounded font-medium">{confirmedCount} ✓</span>
           <span className="text-[10px] bg-destructive/10 text-destructive px-1.5 py-0.5 rounded font-medium">{dismissedCount} ✗</span>
           {duplicateCount > 0 && (
@@ -1592,6 +1864,8 @@ export default function AssistedInspectionV3({
                     activePart={activePart}
                     damages={damagesWithDiagramTest}
                     vehicleType={vehicleType}
+                    currentPartName={walkState.currentPart?.name ?? null}
+                    nextPartName={walkState.nextPart?.name ?? null}
                     onSelectPartByName={(name) => {
                       const part = allParts.find((p) => p.name === name);
                       if (part) selectPart(part);
@@ -1659,11 +1933,15 @@ function MiniCarDiagram({
   damages,
   vehicleType = 'sedan',
   onSelectPartByName,
+  currentPartName,
+  nextPartName,
 }: {
   activePart: CarPart | null;
   damages: Damage[];
   vehicleType?: BodyType;
   onSelectPartByName?: (partName: string) => void;
+  currentPartName?: string | null;
+  nextPartName?: string | null;
 }) {
   /** Top-down exterior sketch vs placeholder interior vs undercarriage schematic */
   const [diagramSurface, setDiagramSurface] = React.useState<'exterior' | 'interior' | 'undercarriage'>(
@@ -1798,6 +2076,8 @@ function MiniCarDiagram({
           <SedanUnifiedDiagram
             damages={damages}
             onPartClick={onSelectPartByName}
+            currentPartName={currentPartName ?? activePart?.name ?? null}
+            nextPartName={nextPartName ?? null}
             className={cn(
               'absolute left-0 top-0 h-full w-full [&_svg]:block [&_svg]:h-full [&_svg]:w-full',
               !onSelectPartByName && 'pointer-events-none',

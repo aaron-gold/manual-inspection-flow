@@ -28,7 +28,8 @@ function newCaptureId(): string {
 }
 
 export type CapturedPhotoPayload = {
-  dataUrl: string;
+  /** Omitted when the inspector logs missed damage without a photo. */
+  dataUrl?: string;
   partName: string;
   damageType: string;
   /** Links the saved photo to the matching manual damage row in the inspection. */
@@ -132,6 +133,16 @@ export default function CameraCapture({
     setDamageType(MANUAL_DAMAGE_TYPES[0]);
   }, [partNames, suggestedPartName]);
 
+  /** Same as after a capture, but part + damage only (no image). */
+  const goToDetailsWithoutPhoto = () => {
+    stopStream();
+    setMode('details');
+    setPendingDataUrl(null);
+    setUseCatalogPicker(false);
+    setCatalogArea(CATALOG_AREA_ORDER[0]);
+    applyVehicleMapDefaults();
+  };
+
   const applyCatalogDefaultsForArea = useCallback(
     (area: CatalogArea) => {
       const parts = partsByCategory.get(area) ?? [];
@@ -212,7 +223,7 @@ export default function CameraCapture({
   };
 
   const submitDetails = () => {
-    if (!pendingDataUrl || !selectedPart.trim()) return;
+    if (!selectedPart.trim() || mode !== 'details') return;
     let dt: string;
     if (useCatalogPicker) {
       const resolved =
@@ -225,7 +236,7 @@ export default function CameraCapture({
       dt = resolvedType.trim() || MANUAL_DAMAGE_TYPES[0];
     }
     onCapture({
-      dataUrl: pendingDataUrl,
+      ...(pendingDataUrl ? { dataUrl: pendingDataUrl } : {}),
       partName: selectedPart.trim(),
       damageType: dt,
       captureId: newCaptureId(),
@@ -237,7 +248,7 @@ export default function CameraCapture({
     onClose();
   };
 
-  if (mode === 'details' && pendingDataUrl) {
+  if (mode === 'details') {
     return (
       <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center animate-in fade-in duration-200 p-4">
         <div className="bg-card rounded-2xl shadow-2xl border border-border w-full max-w-lg max-h-[92vh] overflow-hidden flex flex-col">
@@ -245,7 +256,9 @@ export default function CameraCapture({
             <div>
               <h3 className="font-bold text-foreground text-base">Document missed damage</h3>
               <p className="text-xs text-muted-foreground mt-0.5">
-                Pick the car part and damage type so this finding matches the vehicle map and reports.
+                {pendingDataUrl
+                  ? 'Pick the car part and damage type so this finding matches the vehicle map and reports.'
+                  : 'No photo — choose part and damage so this missed finding appears on the map and in reports.'}
               </p>
             </div>
             <button
@@ -259,7 +272,17 @@ export default function CameraCapture({
 
           <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-4">
             <div className="rounded-xl overflow-hidden border border-border bg-muted/30 aspect-video flex items-center justify-center">
-              <img src={pendingDataUrl} alt="Captured" className="max-h-full max-w-full object-contain" />
+              {pendingDataUrl ? (
+                <img src={pendingDataUrl} alt="Captured" className="max-h-full max-w-full object-contain" />
+              ) : (
+                <div className="flex flex-col items-center justify-center gap-2 px-6 text-center text-muted-foreground">
+                  <Image className="opacity-40" size={40} aria-hidden />
+                  <p className="text-sm font-medium text-foreground">No photo attached</p>
+                  <p className="text-xs max-w-sm">
+                    You can go back to add a picture, or save this entry with part and damage only.
+                  </p>
+                </div>
+              )}
             </div>
 
             <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/20 px-3 py-2.5">
@@ -358,22 +381,23 @@ export default function CameraCapture({
                   <label htmlFor="camera-capture-part" className="text-xs font-semibold text-foreground block mb-1.5">
                     Car part
                   </label>
-                  <select
+                  <input
                     id="camera-capture-part"
+                    type="text"
+                    list="camera-capture-part-suggestions"
                     value={selectedPart}
                     onChange={(e) => setSelectedPart(e.target.value)}
-                    className="w-full px-3 py-2.5 text-sm rounded-lg border border-input bg-background text-foreground"
-                  >
-                    {partNames.length === 0 ? (
-                      <option value="">No parts configured</option>
-                    ) : (
-                      partNames.map((name) => (
-                        <option key={name} value={name}>
-                          {name}
-                        </option>
-                      ))
-                    )}
-                  </select>
+                    placeholder="Pick from list or type any panel name…"
+                    className="w-full px-3 py-2.5 text-sm rounded-lg border border-input bg-background text-foreground placeholder:text-muted-foreground"
+                  />
+                  <datalist id="camera-capture-part-suggestions">
+                    {partNames.map((name) => (
+                      <option key={name} value={name} />
+                    ))}
+                  </datalist>
+                  <p className="text-[11px] text-muted-foreground mt-1.5">
+                    Suggestions come from the vehicle map. You can enter a part UVeye did not list.
+                  </p>
                 </div>
 
                 <div>
@@ -401,21 +425,34 @@ export default function CameraCapture({
             )}
           </div>
 
-          <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-border shrink-0 bg-card">
+          <div className="flex flex-col gap-2 px-5 py-4 border-t border-border shrink-0 bg-card">
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={handleClose}
+                className="px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={!selectedPart.trim()}
+                onClick={submitDetails}
+                className="px-5 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-40 disabled:pointer-events-none"
+              >
+                {pendingDataUrl ? 'Save photo' : 'Save without photo'}
+              </button>
+            </div>
             <button
               type="button"
-              onClick={handleClose}
-              className="px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground"
+              onClick={() => {
+                stopStream();
+                setMode('menu');
+                setPendingDataUrl(null);
+              }}
+              className="text-center text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline py-1"
             >
-              Cancel
-            </button>
-            <button
-              type="button"
-              disabled={!selectedPart.trim()}
-              onClick={submitDetails}
-              className="px-5 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-40 disabled:pointer-events-none"
-            >
-              Save photo
+              Back to capture options
             </button>
           </div>
         </div>
@@ -462,11 +499,18 @@ export default function CameraCapture({
                   setMode('menu');
                 }}
                 className="px-4 py-3 rounded-xl border border-border text-sm font-medium hover:bg-accent"
-                title="Cancel camera"
+                title="Back to options"
               >
                 <RotateCcw size={18} />
               </button>
             </div>
+            <button
+              type="button"
+              onClick={goToDetailsWithoutPhoto}
+              className="w-full text-center text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline py-2"
+            >
+              Skip photo
+            </button>
           </div>
         )}
 
@@ -507,6 +551,21 @@ export default function CameraCapture({
                 <span className="text-sm font-semibold text-foreground block">Choose from gallery</span>
                 <span className="text-xs text-muted-foreground">Select an existing photo</span>
               </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={goToDetailsWithoutPhoto}
+              className="w-full text-center text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline py-2"
+            >
+              Skip photo
+            </button>
+            <button
+              type="button"
+              onClick={handleClose}
+              className="w-full text-center text-[11px] text-muted-foreground/80 hover:text-muted-foreground underline-offset-2 hover:underline py-1"
+            >
+              Cancel — close
             </button>
           </div>
         )}

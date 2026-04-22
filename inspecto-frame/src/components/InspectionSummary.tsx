@@ -70,7 +70,8 @@ type SummaryFilter =
   | 'pending'
   | 'approved'
   | 'rejected'
-  | 'duplicates';
+  | 'duplicates'
+  | 'userAdded';
 
 function matchesSummaryFilter(d: Damage, f: SummaryFilter): boolean {
   switch (f) {
@@ -86,6 +87,8 @@ function matchesSummaryFilter(d: Damage, f: SummaryFilter): boolean {
       return d.confirmed === false;
     case 'duplicates':
       return !!d.isDuplicate;
+    case 'userAdded':
+      return d.ai === false;
     default:
       return true;
   }
@@ -98,9 +101,18 @@ const FILTER_LABELS: Record<SummaryFilter, string> = {
   approved: 'Approved',
   rejected: 'Rejected',
   duplicates: 'Duplicates',
+  userAdded: 'Added by inspector',
 };
 
-const FILTER_ORDER: SummaryFilter[] = ['all', 'reviewed', 'pending', 'approved', 'rejected', 'duplicates'];
+const FILTER_ORDER: SummaryFilter[] = [
+  'all',
+  'reviewed',
+  'pending',
+  'approved',
+  'rejected',
+  'duplicates',
+  'userAdded',
+];
 
 export default function InspectionSummary({
   vehicleLabel,
