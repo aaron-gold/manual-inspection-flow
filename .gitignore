@@ -22,3 +22,10 @@ inspecto-frame/*.ntvs*
 inspecto-frame/*.njsproj
 inspecto-frame/*.sln
 inspecto-frame/*.sw?
+
+# Local agent / tooling
+inspecto-frame/.claude/
+
+# Vite / Vitest ephemeral timestamp outputs (should not be committed)
+inspecto-frame/vite.config.ts.timestamp-*.mjs
+inspecto-frame/vitest.config.ts.timestamp-*.mjs
