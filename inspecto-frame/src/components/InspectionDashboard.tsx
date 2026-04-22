@@ -44,6 +44,12 @@ export interface InspectionRecord {
   completedAt?: Date;
   /** Seconds from `timerStartedAt` to `completedAt`; unset until completed. */
   durationSeconds?: number;
+  /** Fleet / UVeye vehicle key when the API provides `uniqueId` (or similar) on the vehicle object. */
+  vehicleUniqueId?: string;
+  /** License plate from the UVeye payload (may be empty for some sites). */
+  licensePlate?: string;
+  /** Two-letter US state abbreviation that goes with the plate (e.g. "FL"). */
+  licensePlateState?: string;
 }
 
 interface Props {
@@ -437,6 +443,22 @@ function InspectionCard({ inspection, onClick }: { inspection: InspectionRecord;
     month: 'short', day: 'numeric', year: 'numeric',
     hour: '2-digit', minute: '2-digit',
   });
+  const uid = inspection.vehicleUniqueId?.trim();
+  const insp = inspection.uveyeInspectionId?.trim();
+  const sameId = Boolean(uid && insp && uid === insp);
+  const vin = inspection.vin?.trim();
+  const plate = inspection.licensePlate?.trim();
+  const plateState = inspection.licensePlateState?.trim();
+  /** Show "—" for missing values so the four-field layout is always present and predictable. */
+  const dash = '—';
+  const displayVin = vin && vin !== '—' ? vin : dash;
+  const displayPlate = plate
+    ? plateState
+      ? `${plate} · ${plateState}`
+      : plate
+    : dash;
+  const displayUniqueId = uid || dash;
+  const displayInspectionId = insp || dash;
 
   return (
     <button
@@ -453,10 +475,29 @@ function InspectionCard({ inspection, onClick }: { inspection: InspectionRecord;
           </span>
           <span className="text-xs text-muted-foreground">• {inspection.color}</span>
         </div>
-        <div className="flex items-center gap-3 mt-0.5 text-xs text-muted-foreground flex-wrap">
-          <span title="UVeye inspection id">{inspection.uveyeInspectionId}</span>
-          <span>• VIN: {inspection.vin}</span>
-          <span>• {dateStr}</span>
+        {/* Four-field identity block — always rendered so cards line up even when some values are empty. */}
+        <div className="mt-1 grid gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground sm:grid-cols-2">
+          <span title="Vehicle uniqueId from scan payload" className="truncate">
+            <span className="font-medium text-foreground/75">Unique Id: </span>
+            <span className="font-mono text-foreground/90">{displayUniqueId}</span>
+          </span>
+          <span title="UVeye inspection id" className="truncate">
+            <span className="font-medium text-foreground/75">Inspection Id: </span>
+            <span className="font-mono text-foreground/90">
+              {sameId ? `${dash} (same as Unique Id)` : displayInspectionId}
+            </span>
+          </span>
+          <span title="License plate" className="truncate">
+            <span className="font-medium text-foreground/75">Plate: </span>
+            <span className="font-mono text-foreground/90">{displayPlate}</span>
+          </span>
+          <span title="Vehicle identification number" className="truncate">
+            <span className="font-medium text-foreground/75">VIN: </span>
+            <span className="font-mono text-foreground/90">{displayVin}</span>
+          </span>
+        </div>
+        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+          <span>{dateStr}</span>
           {inspection.damageCount > 0 && (
             <span className="flex items-center gap-1 text-destructive">
               <AlertTriangle size={11} />

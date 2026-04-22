@@ -522,6 +522,81 @@ export function humanizeDetectionType(raw: string): string {
     .trim() || raw;
 }
 
+/**
+ * Compact Artemis tire labels for UI + CSV (avoids `Sidewall: … — Tire sidewall — …` export collisions).
+ * Accepts either a short phrase or legacy `Tire sidewall|tread — …` strings from older persisted rows.
+ */
+export function shortenArtemisTirePhrase(input: string): string {
+  let t = input.trim();
+  const legacy = t.match(/^Tire (sidewall|tread) — (.+)$/i);
+  if (legacy) t = legacy[2].trim();
+  t = humanizeDetectionType(t);
+  if (t === 'Tire Cosmetic Rim Damage') return 'Cosmetic Rim Damage';
+  if (t === 'Tire Rim Damage') return 'Rim Damage';
+  if (t === 'Tire Damage') return 'Tire Damage';
+  if (/^low tread depth$/i.test(t)) return 'Low tread depth';
+  if (t.startsWith('Tire ') && t.length > 'Tire '.length) {
+    const rest = t.slice('Tire '.length);
+    return rest === 'Damage' ? 'Tire Damage' : rest;
+  }
+  return t;
+}
+
+/** True when tire / Artemis `type` strings match after normalizing legacy `Tire sidewall — …` forms. */
+export function tireDamageTypeEquivalent(a: string, b: string): boolean {
+  return shortenArtemisTirePhrase(a) === shortenArtemisTirePhrase(b);
+}
+
+/** UVeye / fleet vehicle id when present (may match inspection id on some tenants). */
+export function vehicleUniqueIdFromPayload(response: UveyeInspectionResponse): string {
+  const root = response as Record<string, unknown>;
+  const v = response.vehicle as Record<string, unknown> | undefined;
+  const insp = String(response.inspectionId ?? root.inspectionId ?? '').trim();
+  const vehicleIdStr =
+    typeof v?.id === 'string'
+      ? v.id.trim()
+      : v?.id != null && typeof v.id !== 'object'
+        ? String(v.id).trim()
+        : '';
+  const candidates: unknown[] = [
+    v?.uniqueId,
+    v?.uniqueID,
+    v?.unique_id,
+    v?.vehicleUniqueId,
+    v?.vehicleUniqueID,
+    v?.vehicleId,
+    v?.vehicle_id,
+    v?.fleetId,
+    v?.fleet_id,
+    v?.unitId,
+    v?.unit_id,
+    v?.referenceId,
+    v?.stockNumber,
+    v?.licensePlate,
+    v?.plate,
+    root.uniqueId,
+    root.uniqueID,
+    root.unique_id,
+    root.vehicleUniqueId,
+    root.vehicleUniqueID,
+    root.vehicleId,
+    root.fleetId,
+    root.unitId,
+  ];
+  if (vehicleIdStr && (!insp || vehicleIdStr !== insp)) {
+    candidates.unshift(vehicleIdStr);
+  }
+  for (const c of candidates) {
+    if (typeof c === 'string') {
+      const s = c.trim();
+      if (s) return s;
+    } else if (c != null && typeof c !== 'object' && String(c).trim()) {
+      return String(c).trim();
+    }
+  }
+  return '';
+}
+
 /** True for empty or our synthetic `cam_0`… labels from `buildCameraFramesFromResponse` (not real Atlas ids). */
 function isSyntheticPortalCameraId(s: string): boolean {
   return !s.trim() || /^cam_\d+$/i.test(s.trim());
@@ -794,8 +869,7 @@ function artemisTireAlerts(response: UveyeInspectionResponse): UveyeAlert[] {
         const humanType = humanizeDetectionType(String(o.type ?? 'Tire damage'));
         const rawTitle = pickDetectionDisplayName(o);
         const label = rawTitle || humanType;
-        const typeStr = `Tire sidewall — ${humanType}`;
-        const damageName = `Sidewall: ${label}`;
+        const typeStr = shortenArtemisTirePhrase(label);
         out.push({
           id: String(o.id ?? `tire_wall_${corner}_${idx}`),
           part,
@@ -804,7 +878,6 @@ function artemisTireAlerts(response: UveyeInspectionResponse): UveyeAlert[] {
           imageUrl: url,
           ...(cleanReviewImageUrl ? { cleanReviewImageUrl } : {}),
           location: { x, y },
-          damageName,
           inspectionModule: 'artemis',
         });
         idx += 1;
@@ -836,8 +909,7 @@ function artemisTireAlerts(response: UveyeInspectionResponse): UveyeAlert[] {
         const humanType = humanizeDetectionType(String(o.type ?? 'Tire damage'));
         const rawTitle = pickDetectionDisplayName(o);
         const label = rawTitle || humanType;
-        const typeStr = `Tire tread — ${humanType}`;
-        const damageName = `Tread: ${label}`;
+        const typeStr = shortenArtemisTirePhrase(label);
         out.push({
           id: String(o.id ?? `tire_tread_${corner}_${idx}`),
           part,
@@ -846,7 +918,6 @@ function artemisTireAlerts(response: UveyeInspectionResponse): UveyeAlert[] {
           imageUrl: url,
           ...(cleanReviewImageUrl ? { cleanReviewImageUrl } : {}),
           location: { x, y },
-          damageName,
           inspectionModule: 'artemis',
         });
         idx += 1;
@@ -894,12 +965,11 @@ function artemisTireAlerts(response: UveyeInspectionResponse): UveyeAlert[] {
         out.push({
           id: `groove_low_${corner}`,
           part: partWheel,
-          type: 'Tire tread — Low tread depth',
+          type: 'Low tread depth',
           severity: high ? 'High' : med ? 'Medium' : 'Low',
           imageUrl: treadGrooveViewUrl,
           ...(cleanGrooveReview ? { cleanReviewImageUrl: cleanGrooveReview } : {}),
           location: { x: pin.x, y: pin.y },
-          damageName: `Tread: low depth (${depthLabel} — at or below 3/32")`,
           inspectionModule: 'artemis',
         });
         idx += 1;
@@ -973,7 +1043,10 @@ export function collectHumanizedDamageTypesFromPayload(response: UveyeInspection
   for (const a of alerts) {
     const raw = typeof a.type === 'string' ? a.type.trim() : '';
     if (!raw) continue;
-    const h = humanizeDetectionType(raw);
+    const h =
+      a.inspectionModule === 'artemis'
+        ? shortenArtemisTirePhrase(raw)
+        : humanizeDetectionType(raw);
     const key = h.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
@@ -1344,7 +1417,17 @@ export function mergePersistedDamagesWithFreshMap<
         (x) =>
           partNameMatches(x.part, d.part) &&
           (x.damageName || '') === (d.damageName || '') &&
-          x.type === d.type &&
+          tireDamageTypeEquivalent(x.type, d.type) &&
+          x.severity === d.severity,
+      );
+    }
+    /** Same detection after shortening Artemis labels (`Tire sidewall — …` → compact) or clearing `damageName`. */
+    if (idx < 0) {
+      idx = pool.findIndex(
+        (x) =>
+          partNameMatches(x.part, d.part) &&
+          x.frameId === d.frameId &&
+          tireDamageTypeEquivalent(x.type, d.type) &&
           x.severity === d.severity,
       );
     }
@@ -1568,9 +1651,12 @@ export function buildInspectionRecordFromResponse(
   createdAt: Date;
   status: "in_progress";
   damageCount: number;
+  vehicleUniqueId?: string;
+  licensePlate?: string;
+  licensePlateState?: string;
 } {
   const root = response as Record<string, unknown>;
-  const v = response.vehicle;
+  const v = response.vehicle as Record<string, unknown> | undefined;
   const make = String(v?.make ?? root.make ?? "—");
   const model = String(v?.model ?? root.model ?? "—");
   const yearRaw = v?.year ?? root.year;
@@ -1578,17 +1664,29 @@ export function buildInspectionRecordFromResponse(
     typeof yearRaw === "number"
       ? yearRaw
       : parseInt(String(yearRaw ?? "").replace(/[^\d]/g, "").slice(0, 4), 10) || new Date().getFullYear();
-  const vin = String(response.vin ?? root.vin ?? "—");
+  const vin = String(response.vin ?? root.vin ?? "").trim();
   const color = String(v?.color ?? root.exteriorColor ?? "—");
   const vehicleLike = v ?? {
     bodyType: root.bodyType,
     vehicleType: root.bodyType,
   };
   const uveyeId = String(response.inspectionId ?? requestedId).trim();
+  const vehicleUniqueId = vehicleUniqueIdFromPayload(response);
+  /** License plate + US state abbreviation — both optional, may be empty strings in the payload. */
+  const licensePlate = String(
+    (v?.licensePlate as string | undefined) ??
+      (root.licensePlate as string | undefined) ??
+      "",
+  ).trim();
+  const licensePlateState = String(
+    (v?.licensePlateUsStateAbbreviation as string | undefined) ??
+      (root.licensePlateUsStateAbbreviation as string | undefined) ??
+      "",
+  ).trim();
   return {
     id: uveyeId,
     uveyeInspectionId: uveyeId,
-    vin,
+    vin: vin || "—",
     make,
     model,
     year: yearNum,
@@ -1597,5 +1695,8 @@ export function buildInspectionRecordFromResponse(
     createdAt: new Date(),
     status: "in_progress",
     damageCount: getCombinedAlerts(response).length,
+    ...(vehicleUniqueId ? { vehicleUniqueId } : {}),
+    ...(licensePlate ? { licensePlate } : {}),
+    ...(licensePlateState ? { licensePlateState } : {}),
   };
 }

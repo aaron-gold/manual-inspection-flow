@@ -67,6 +67,12 @@ export function DamageReportPreviewDialog({
             <dd>{meta.model || '—'}</dd>
             <dt className="text-muted-foreground">Year</dt>
             <dd>{meta.year || '—'}</dd>
+            {meta.vehicleUniqueId ? (
+              <>
+                <dt className="text-muted-foreground">Vehicle uniqueId</dt>
+                <dd className="font-mono text-xs break-all">{meta.vehicleUniqueId}</dd>
+              </>
+            ) : null}
             {meta.inspectionId ? (
               <>
                 <dt className="text-muted-foreground">Inspection ID</dt>

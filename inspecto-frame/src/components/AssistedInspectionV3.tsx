@@ -12,6 +12,7 @@ import {
   prefetchUveyeImages,
   resolveDamageAtlasPortalUrl,
   buildUveyePortalSummaryUrl,
+  vehicleUniqueIdFromPayload,
   type UveyeInspectionResponse,
   type UveyeCameraFrame,
 } from '@/services/uveyeApi';
@@ -36,6 +37,7 @@ import { InspectionOrientation } from '@/components/InspectionOrientation';
 import { SEDAN_LAYOUT_BASE_PX } from '@/lib/sedanDiagramCalibration';
 import { DamageReportPreviewDialog } from '@/components/DamageReportPreviewDialog';
 import type { DamageReportTimingMeta } from '@/lib/damageReportCsv';
+import { damageLabelForExport } from '@/lib/damageReportCsv';
 import { allDamageRowsReviewed, formatDurationSeconds } from '@/lib/inspectionTiming';
 import {
   Dialog,
@@ -321,6 +323,12 @@ export default function AssistedInspectionV3({
   }, [frameImages]);
 
   const summaryPortalUrl = useMemo(() => buildUveyePortalSummaryUrl(payload), [payload]);
+
+  const vehicleUniqueId = useMemo(
+    () =>
+      (inspectionRecord?.vehicleUniqueId?.trim() || vehicleUniqueIdFromPayload(payload) || '').trim(),
+    [inspectionRecord?.vehicleUniqueId, payload],
+  );
 
   const [damages, setDamages] = useState<Damage[]>([]);
   /** False until payload→damages sync runs (empty `[]` must not count as “all reviewed”). */
@@ -1159,22 +1167,52 @@ export default function AssistedInspectionV3({
             height={56}
             className="h-12 w-12 shrink-0 rounded-xl object-contain bg-muted ring-1 ring-border"
           />
-          <div className="min-w-0">
+          <div className="min-w-0 flex flex-col gap-0.5">
             <h1 className="font-bold text-base tracking-tight truncate">{vehicleLabel || 'AutoInspect'}</h1>
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-              <p className="text-xs text-muted-foreground">FEP092 FL</p>
-              {summaryPortalUrl && (
-                <a
-                  href={summaryPortalUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
-                >
-                  <ExternalLink size={12} className="shrink-0" />
-                  UVeye inspection
-                </a>
-              )}
-            </div>
+            {/* Identity row on the inspection page shows Unique Id, Plate, and VIN. Inspection Id
+                is intentionally omitted here — it's long and only useful for cross-referencing
+                in the dashboard / summary. Empty values render as "—" so layout stays predictable. */}
+            {(() => {
+              const dash = '—';
+              const uid = (vehicleUniqueId || inspectionRecord?.vehicleUniqueId)?.trim();
+              const vin = inspectionRecord?.vin?.trim();
+              const plate = inspectionRecord?.licensePlate?.trim();
+              const plateState = inspectionRecord?.licensePlateState?.trim();
+              const displayVin = vin && vin !== '—' ? vin : dash;
+              const displayPlate = plate
+                ? plateState
+                  ? `${plate} · ${plateState}`
+                  : plate
+                : dash;
+              const displayUniqueId = uid || dash;
+              return (
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
+                  <span className="min-w-0 truncate" title={`Unique Id: ${displayUniqueId}`}>
+                    <span className="font-medium text-muted-foreground">Unique Id </span>
+                    <span className="font-mono text-foreground/80">{displayUniqueId}</span>
+                  </span>
+                  <span className="min-w-0 truncate" title={`Plate: ${displayPlate}`}>
+                    <span className="font-medium text-muted-foreground">Plate </span>
+                    <span className="font-mono text-foreground/80">{displayPlate}</span>
+                  </span>
+                  <span className="min-w-0 truncate" title={`VIN: ${displayVin}`}>
+                    <span className="font-medium text-muted-foreground">VIN </span>
+                    <span className="font-mono text-foreground/80">{displayVin}</span>
+                  </span>
+                  {summaryPortalUrl && (
+                    <a
+                      href={summaryPortalUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex shrink-0 items-center gap-1 font-medium text-primary hover:underline"
+                    >
+                      <ExternalLink size={12} className="shrink-0" />
+                      UVeye inspection
+                    </a>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         </div>
         <div className="flex items-center gap-2 lg:gap-3 shrink-0 flex-wrap justify-end">
@@ -1311,7 +1349,32 @@ export default function AssistedInspectionV3({
             height={48}
             className="h-11 w-11 shrink-0 rounded-lg object-contain bg-muted ring-1 ring-border"
           />
-          <h1 className="font-bold text-sm leading-tight truncate flex-1 min-w-0">{vehicleLabel || 'AutoInspect'}</h1>
+          <div className="min-w-0 flex-1 flex flex-col gap-0.5 py-0.5">
+            <h1 className="font-bold text-sm leading-tight truncate">{vehicleLabel || 'AutoInspect'}</h1>
+            {(vehicleUniqueId || summaryPortalUrl) && (
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
+                {vehicleUniqueId ? (
+                  <span className="min-w-0 max-w-full font-mono leading-snug tracking-tight text-foreground/80">
+                    <span className="font-sans font-medium text-muted-foreground">uniqueId </span>
+                    <span className="break-all" title={vehicleUniqueId}>
+                      {vehicleUniqueId}
+                    </span>
+                  </span>
+                ) : null}
+                {summaryPortalUrl ? (
+                  <a
+                    href={summaryPortalUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex shrink-0 items-center gap-1 font-medium text-primary hover:underline"
+                  >
+                    <ExternalLink size={11} className="shrink-0" />
+                    UVeye inspection
+                  </a>
+                ) : null}
+              </div>
+            )}
+          </div>
           <button
             type="button"
             onClick={() => setShowCameraCapture(true)}
@@ -1346,20 +1409,7 @@ export default function AssistedInspectionV3({
             <LayoutGrid size={18} />
           </button>
         </div>
-        <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted-foreground">
-          {summaryPortalUrl ? (
-            <a
-              href={summaryPortalUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-primary font-medium truncate min-w-0"
-            >
-              <ExternalLink size={11} className="shrink-0" />
-              <span className="truncate">UVeye summary</span>
-            </a>
-          ) : (
-            <span />
-          )}
+        <div className="flex flex-wrap items-center justify-end gap-2 text-[11px] text-muted-foreground">
           <div className="flex flex-wrap items-center gap-2 shrink-0">
             <div
               className={cn(
@@ -1460,7 +1510,7 @@ export default function AssistedInspectionV3({
                       {partDamages.length > 0
                         ? (() => {
                             const d = partDamages[Math.min(selectedDamageIdx, partDamages.length - 1)];
-                            return d ? d.damageName || d.type || 'Detection' : '';
+                            return d ? damageLabelForExport(d) || d.type || 'Detection' : '';
                           })()
                         : currentFrame
                           ? `${currentFrame.camera} · f${currentFrame.frameNum}`
@@ -1561,7 +1611,7 @@ export default function AssistedInspectionV3({
                 if (!dmg) return null;
                 const dmgFrame = allFrames.find(f => f.id === dmg.frameId);
                 return (
-                  <div className="flex max-h-[40vh] touch-pan-y flex-wrap items-center gap-2 overflow-y-auto overscroll-contain border-b border-border bg-card px-3 py-2 shrink-0 md:max-h-none md:gap-3 md:px-4">
+                  <div className="flex w-full min-w-0 max-h-[40vh] touch-pan-y flex-wrap items-center gap-2 overflow-y-auto overscroll-contain border-b border-border bg-card px-3 py-2 shrink-0 max-md:flex-nowrap max-md:overflow-x-auto max-md:overflow-y-visible max-md:overscroll-x-contain max-md:[-webkit-overflow-scrolling:touch] max-md:touch-pan-x md:max-h-none md:gap-3 md:px-4">
                     {/* Navigation between damages */}
                     <div className="flex items-center gap-1.5 shrink-0">
                       <button
@@ -1582,16 +1632,19 @@ export default function AssistedInspectionV3({
                     </div>
 
                     {/* Damage info — name from API + classification `type` */}
-                    <div className="min-w-0 flex-1">
-                      {dmg.damageName ? (
-                        <p className="text-sm font-bold leading-snug text-foreground break-words md:text-base" title={dmg.damageName}>
-                          {dmg.damageName}
+                    <div className="min-w-0 flex-1 max-md:shrink-0 max-md:max-w-[min(72vw,22rem)]">
+                      <p
+                        className="text-sm font-bold leading-snug text-foreground break-words md:text-base"
+                        title={[dmg.damageName, dmg.type].filter(Boolean).join(' — ') || undefined}
+                      >
+                        {damageLabelForExport(dmg) || dmg.type || '—'}
+                      </p>
+                      {dmg.inspectionModule !== 'artemis' ? (
+                        <p className="mt-0.5 text-sm font-semibold text-foreground md:text-base">
+                          <span className="mr-1.5 text-xs font-normal text-muted-foreground">Type</span>
+                          {dmg.type || '—'}
                         </p>
                       ) : null}
-                      <p className={`font-semibold text-foreground ${dmg.damageName ? 'mt-0.5 text-sm md:text-base' : 'text-sm md:text-base'}`}>
-                        <span className="text-muted-foreground font-normal text-xs mr-1.5">Type</span>
-                        {dmg.type || '—'}
-                      </p>
                       {(dmg.confirmed === true || dmg.confirmed === false || dmg.isDuplicate || dmg.flagged) && (
                         <div className="flex items-center gap-2 flex-wrap mt-1">
                           {dmg.confirmed === true && (
@@ -1812,7 +1865,7 @@ export default function AssistedInspectionV3({
                 )}
 
                 {partFrames.length > 0 && !photoReviewFocus && (
-                <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex gap-1 bg-foreground/30 backdrop-blur-md px-3 py-2 rounded-full items-center max-w-[90%] overflow-x-auto z-10">
+                <div className="absolute bottom-3 left-1/2 z-10 flex max-w-[90%] -translate-x-1/2 touch-pan-x items-center gap-1 overflow-x-auto overscroll-x-contain rounded-full bg-foreground/30 px-3 py-2 backdrop-blur-md [-webkit-overflow-scrolling:touch]">
                   {partFrames.map((frame, idx) => {
                     const hasDamage = partDamages.some(d => d.frameId === frame.id);
                     const prevCam = idx > 0 ? partFrames[idx - 1].camera : null;

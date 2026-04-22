@@ -136,6 +136,7 @@ export default function Index() {
               completedAt: existing.completedAt,
               durationSeconds: existing.durationSeconds,
               status: existing.status,
+              vehicleUniqueId: record.vehicleUniqueId || existing.vehicleUniqueId,
             }
           : record;
         return [merged, ...without];

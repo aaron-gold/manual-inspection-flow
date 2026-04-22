@@ -11,6 +11,8 @@ import {
 } from '@/lib/assistedInspectionModel';
 import {
   buildUveyePortalSummaryUrl,
+  shortenArtemisTirePhrase,
+  vehicleUniqueIdFromPayload,
   type UveyeInspectionResponse,
 } from '@/services/uveyeApi';
 
@@ -28,6 +30,7 @@ export type DamageReportMeta = {
   year: string;
   inspectionId: string;
   uveyeLink: string;
+  vehicleUniqueId: string;
 };
 
 export type DamageReportTableRow = {
@@ -67,7 +70,17 @@ export function sourceLabelForDamage(d: Damage): string {
 }
 
 function damageDisplayLabel(d: Damage): string {
-  return [d.damageName, d.type].filter(Boolean).join(' — ') || d.type;
+  const t = (d.type ?? '').trim();
+  const dn = (d.damageName ?? '').trim();
+  if (/^Tire (sidewall|tread) — /i.test(t)) return shortenArtemisTirePhrase(t);
+  if (d.inspectionModule === 'artemis' && t) return shortenArtemisTirePhrase(t);
+  if (/low tread depth/i.test(t) || /low depth.*3\/32/i.test(dn)) return 'Low tread depth';
+  if (/^Sidewall:/i.test(dn) || /^Tread:/i.test(dn)) {
+    const stripped = dn.replace(/^(Sidewall|Tread):\s*/i, '').trim();
+    return shortenArtemisTirePhrase(stripped || t || dn);
+  }
+  if (dn && t) return `${dn} — ${t}`;
+  return dn || t;
 }
 
 /**
@@ -190,6 +203,7 @@ export function buildDamageReportData(
   const yearStr = yearRaw != null ? String(yearRaw) : '';
   const inspectionId = String(root.inspectionId ?? '');
   const uveyeLink = buildUveyePortalSummaryUrl(payload) ?? '';
+  const vehicleUniqueId = vehicleUniqueIdFromPayload(payload);
 
   const sortedDamages = [...damages].sort(compareDamagesForReport);
 
@@ -206,7 +220,7 @@ export function buildDamageReportData(
   }));
 
   return {
-    meta: { vin, make, model, year: yearStr, inspectionId, uveyeLink },
+    meta: { vin, make, model, year: yearStr, inspectionId, uveyeLink, vehicleUniqueId },
     rows,
   };
 }
@@ -233,6 +247,8 @@ export function buildDamageReportCsv(
   lines.push(['Make', escapeCsvCell(meta.make)].join(','));
   lines.push(['Model', escapeCsvCell(meta.model)].join(','));
   lines.push(['Year', escapeCsvCell(meta.year)].join(','));
+  if (meta.vehicleUniqueId)
+    lines.push(['Vehicle uniqueId', escapeCsvCell(meta.vehicleUniqueId)].join(','));
   if (meta.inspectionId) lines.push(['Inspection ID', escapeCsvCell(meta.inspectionId)].join(','));
   lines.push(['UVeye inspection link', escapeCsvCell(meta.uveyeLink)].join(','));
   if (timing) {
