@@ -69,6 +69,7 @@ import {
   ExternalLink,
   ZoomIn,
   ZoomOut,
+  Sun,
   Flag,
   Copy,
   Image as ImageIcon,
@@ -232,6 +233,16 @@ export default function AssistedInspectionV3({
     () => typeof window !== 'undefined' && window.innerWidth >= 768,
   );
   const [viewportZoom, setViewportZoom] = useState(1);
+  /**
+   * Brightness filter for the inspection image (1 = original, 1.5 = brighter, 0.5 = darker).
+   * Clamped 0.5×–2× by the slider that mutates it. Resets with the frame so each new image
+   * starts at the default exposure.
+   */
+  const [viewportBrightness, setViewportBrightness] = useState(1);
+  /** Controls the brightness slider's open/closed state — icon-only until the inspector taps. */
+  const [brightnessOpen, setBrightnessOpen] = useState(false);
+  /** Same toggle pattern for zoom — icon button until tapped, then a slider for quick adjustment. */
+  const [zoomOpen, setZoomOpen] = useState(false);
   /** Tap photo: hide viewport chrome and, when available, swap to API full-frame image (no arrows). */
   const [photoReviewFocus, setPhotoReviewFocus] = useState(false);
   const isMobile = useIsMobile();
@@ -671,6 +682,9 @@ export default function AssistedInspectionV3({
 
   useEffect(() => {
     setViewportZoom(1);
+    setViewportBrightness(1);
+    setBrightnessOpen(false);
+    setZoomOpen(false);
     setPhotoReviewFocus(false);
   }, [currentFrame?.id]);
 
@@ -752,6 +766,24 @@ export default function AssistedInspectionV3({
     damages.filter(d => partNameMatches(partName, d.part)).length;
   const getPartHasDamage = (partName: string) =>
     damages.some(d => partNameMatches(partName, d.part));
+  /** Damages on this part that still need approve/reject. Drives the "pending" highlight. */
+  const getPartPendingDamageCount = (partName: string) =>
+    damages.filter((d) => partNameMatches(partName, d.part) && d.confirmed == null).length;
+
+  /**
+   * Per-area pending damage count — precomputed once and fed into ZoneProgress so each zone can
+   * show "N to review" without the widget having to reach into the damages array itself.
+   */
+  const pendingDamagesByArea = useMemo(() => {
+    const map: Partial<Record<Area, number>> = {};
+    for (const p of allParts) {
+      const pending = damages.filter(
+        (d) => partNameMatches(p.name, d.part) && d.confirmed == null,
+      ).length;
+      if (pending > 0) map[p.area] = (map[p.area] ?? 0) + pending;
+    }
+    return map;
+  }, [damages, allParts]);
 
   const addCustomPart = (area: Area) => {
     if (!newPartName.trim()) return;
@@ -807,6 +839,7 @@ export default function AssistedInspectionV3({
             recentlyCompletedArea={recentlyCompletedArea}
             onSelectPart={handleSelectPartByName}
             onSelectArea={handleSelectArea}
+            pendingDamagesByArea={pendingDamagesByArea}
           />
         </div>
         {/* 2. Diagram — chevron header toggles visibility; matches the pattern used by ZoneProgress. */}
@@ -868,6 +901,11 @@ export default function AssistedInspectionV3({
             const areaParts = sortPartsByPanelOrder(allParts.filter((p) => p.area === area));
             const areaHasDamage = areaParts.some((p) => getPartHasDamage(p.name));
             const areaDamageCount = areaParts.reduce((sum, p) => sum + getPartDamageCount(p.name), 0);
+            /** Damages on this area that still need approve/reject — drives the red "pending" badge. */
+            const areaPendingCount = areaParts.reduce(
+              (sum, p) => sum + getPartPendingDamageCount(p.name),
+              0,
+            );
             const reviewedCount = areaParts.filter((p) => reviewedParts.has(p.name)).length;
             const isExpanded = expandedArea === area || activePart?.area === area;
 
@@ -908,11 +946,24 @@ export default function AssistedInspectionV3({
                       <ChevronDown size={12} className={`transition-transform ${isExpanded ? '' : '-rotate-90'}`} />
                       {area}
                       {areaHasDamage && <span className="w-1.5 h-1.5 rounded-full bg-destructive" />}
-                      {areaDamageCount > 0 && (
-                        <span className="min-w-[16px] h-[16px] rounded-full bg-destructive text-background flex items-center justify-center text-[9px] font-bold">
+                      {/* Badge meaning: red with count = damages still to review (demands
+                          attention), muted green check = damages exist but all reviewed. */}
+                      {areaPendingCount > 0 ? (
+                        <span
+                          className="min-w-[18px] h-[18px] px-1 rounded-full bg-destructive text-background flex items-center justify-center text-[9px] font-bold ring-2 ring-destructive/25 animate-pulse"
+                          title={`${areaPendingCount} damage${areaPendingCount !== 1 ? 's' : ''} pending in ${area}`}
+                        >
+                          {areaPendingCount}
+                        </span>
+                      ) : areaDamageCount > 0 ? (
+                        <span
+                          className="min-w-[18px] h-[18px] px-1 rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 flex items-center justify-center gap-0.5 text-[9px] font-semibold"
+                          title={`All ${areaDamageCount} damage${areaDamageCount !== 1 ? 's' : ''} reviewed in ${area}`}
+                        >
+                          <Check size={9} strokeWidth={3} />
                           {areaDamageCount}
                         </span>
-                      )}
+                      ) : null}
                     </span>
                     <span className="text-[10px] text-muted-foreground">
                       {reviewedCount}/{areaParts.length}
@@ -924,6 +975,7 @@ export default function AssistedInspectionV3({
                   <div className="ml-5 mt-0.5 space-y-0.5">
                     {areaParts.map((part) => {
                       const dmgCount = getPartDamageCount(part.name);
+                      const pendingCount = getPartPendingDamageCount(part.name);
                       const isActive = activePart?.name === part.name;
                       const reviewed = reviewedParts.has(part.name);
                       return (
@@ -941,19 +993,36 @@ export default function AssistedInspectionV3({
                             onClick={() => selectPart(part)}
                             className={`flex-1 flex items-center justify-between px-2 py-1 rounded-md text-xs transition-all
                               ${isActive ? 'bg-primary text-primary-foreground font-bold'
+                                : pendingCount > 0 ? 'text-foreground hover:bg-destructive/10 font-semibold'
                                 : reviewed ? 'text-primary/80 hover:bg-primary/5 font-medium line-through opacity-70'
                                 : dmgCount === 0 ? 'text-muted-foreground/50 hover:bg-accent font-medium opacity-40'
                                 : 'text-foreground hover:bg-accent font-medium'}`}
                           >
                             <span className="truncate">{part.name}</span>
-                            {dmgCount > 0 && (
+                            {/* Badge: red+pulse for pending damages, muted emerald check when
+                                every damage on this part has already been approved / rejected. */}
+                            {pendingCount > 0 ? (
                               <span
-                                className={`min-w-[14px] h-[14px] rounded-full flex items-center justify-center text-[8px] font-bold
-                                ${isActive ? 'bg-primary-foreground/20 text-primary-foreground' : 'bg-destructive text-background'}`}
+                                className={`min-w-[16px] h-[16px] px-1 rounded-full flex items-center justify-center text-[8px] font-bold
+                                ${isActive
+                                  ? 'bg-primary-foreground/20 text-primary-foreground'
+                                  : 'bg-destructive text-background ring-2 ring-destructive/25 animate-pulse'}`}
+                                title={`${pendingCount} damage${pendingCount !== 1 ? 's' : ''} still to review`}
                               >
+                                {pendingCount}
+                              </span>
+                            ) : dmgCount > 0 ? (
+                              <span
+                                className={`min-w-[16px] h-[16px] px-1 rounded-full flex items-center justify-center gap-0.5 text-[8px] font-semibold
+                                ${isActive
+                                  ? 'bg-primary-foreground/20 text-primary-foreground'
+                                  : 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'}`}
+                                title={`All ${dmgCount} damage${dmgCount !== 1 ? 's' : ''} reviewed`}
+                              >
+                                <Check size={9} strokeWidth={3} />
                                 {dmgCount}
                               </span>
-                            )}
+                            ) : null}
                           </button>
                         </div>
                       );
@@ -1787,6 +1856,7 @@ export default function AssistedInspectionV3({
                       alt={`${currentFrame.camera} frame ${currentFrame.frameNum}`}
                       zoom={viewportZoom}
                       onZoomChange={setViewportZoom}
+                      brightness={viewportBrightness}
                       onPhotoTap={() => setPhotoReviewFocus((v) => !v)}
                     />
                   ) : (
@@ -1798,50 +1868,178 @@ export default function AssistedInspectionV3({
                   )}
                 </div>
 
-                {/* Zoom + keyboard hint */}
+                {/* Zoom + brightness controls. Same toggle-to-slider pattern for both so the
+                    inspector has a consistent touch target and gets back screen real estate
+                    when not actively adjusting. */}
                 {currentFrame && viewportFrameImages[currentFrame.id] && !photoReviewFocus && (
-                  <div className="absolute top-3 right-3 flex items-center gap-1 bg-card/95 backdrop-blur-md border border-border rounded-lg p-1 shadow-lg z-10">
-                    <button
-                      type="button"
-                      onClick={() => setViewportZoom((z) => Math.min(4, z + 0.15))}
-                      className="p-1.5 rounded-md hover:bg-muted text-foreground"
-                      title="Zoom in"
-                    >
-                      <ZoomIn size={16} />
-                    </button>
-                    <span className="text-[10px] font-mono text-muted-foreground min-w-[2.5rem] text-center">{Math.round(viewportZoom * 100)}%</span>
-                    <button
-                      type="button"
-                      onClick={() => setViewportZoom((z) => Math.max(1, z - 0.15))}
-                      className="p-1.5 rounded-md hover:bg-muted text-foreground"
-                      title="Zoom out"
-                    >
-                      <ZoomOut size={16} />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setViewportZoom(1)}
-                      className="px-2 py-1 text-[10px] font-medium text-muted-foreground hover:text-foreground"
-                      title="Fit full image in view"
-                    >
-                      Fit
-                    </button>
+                  <div className="absolute top-3 right-3 flex flex-col items-end gap-2 z-10">
+                    {/* Zoom: icon + current % when collapsed; slider (100–400%) when expanded. */}
+                    {!zoomOpen ? (
+                      <button
+                        type="button"
+                        onClick={() => setZoomOpen(true)}
+                        className="relative flex items-center gap-1.5 bg-card/95 backdrop-blur-md border border-border rounded-lg px-2.5 py-2 shadow-lg text-foreground hover:bg-muted min-h-[40px]"
+                        title={
+                          viewportZoom === 1
+                            ? 'Zoom'
+                            : `Zoom ${Math.round(viewportZoom * 100)}% — tap to adjust`
+                        }
+                        aria-label="Adjust zoom"
+                      >
+                        <ZoomIn size={16} aria-hidden />
+                        {viewportZoom !== 1 && (
+                          <>
+                            <span className="text-[10px] font-mono tabular-nums">
+                              {Math.round(viewportZoom * 100)}%
+                            </span>
+                            <span
+                              className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-primary ring-2 ring-card"
+                              aria-hidden
+                            />
+                          </>
+                        )}
+                      </button>
+                    ) : (
+                      <div className="flex items-center gap-2 bg-card/95 backdrop-blur-md border border-border rounded-lg px-2.5 py-2 shadow-lg min-h-[44px]">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setViewportZoom((z) => Math.max(1, +(z - 0.15).toFixed(2)))
+                          }
+                          className="p-1.5 rounded-md hover:bg-muted text-foreground shrink-0"
+                          title="Zoom out"
+                          aria-label="Zoom out"
+                        >
+                          <ZoomOut size={16} />
+                        </button>
+                        <input
+                          type="range"
+                          min={100}
+                          max={400}
+                          step={10}
+                          value={Math.round(viewportZoom * 100)}
+                          onChange={(e) =>
+                            setViewportZoom(
+                              Math.max(1, Math.min(4, Number(e.target.value) / 100)),
+                            )
+                          }
+                          className="h-6 w-32 cursor-pointer accent-primary sm:w-40"
+                          aria-label="Image zoom"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setViewportZoom((z) => Math.min(4, +(z + 0.15).toFixed(2)))
+                          }
+                          className="p-1.5 rounded-md hover:bg-muted text-foreground shrink-0"
+                          title="Zoom in"
+                          aria-label="Zoom in"
+                        >
+                          <ZoomIn size={16} />
+                        </button>
+                        <span className="text-[10px] font-mono text-muted-foreground min-w-[2.5rem] text-center tabular-nums">
+                          {Math.round(viewportZoom * 100)}%
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setViewportZoom(1)}
+                          className="px-2 py-1 text-[10px] font-medium text-muted-foreground hover:text-foreground disabled:opacity-40"
+                          title="Fit full image in view"
+                          disabled={viewportZoom === 1}
+                        >
+                          Fit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setZoomOpen(false)}
+                          className="p-1.5 rounded-md hover:bg-muted text-muted-foreground"
+                          title="Close zoom"
+                          aria-label="Close zoom panel"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    )}
+                    {/*
+                      Brightness control — collapsed by default into a single icon button so the
+                      inspector's view isn't cluttered. When toggled on, expands into a slider
+                      that's comfortable to drag with a finger on mobile (44px tall).
+                    */}
+                    {!brightnessOpen ? (
+                      <button
+                        type="button"
+                        onClick={() => setBrightnessOpen(true)}
+                        className="relative flex items-center gap-1.5 bg-card/95 backdrop-blur-md border border-border rounded-lg px-2.5 py-2 shadow-lg text-foreground hover:bg-muted min-h-[40px]"
+                        title={
+                          viewportBrightness === 1
+                            ? 'Adjust brightness'
+                            : `Brightness ${Math.round(viewportBrightness * 100)}% — tap to adjust`
+                        }
+                        aria-label="Adjust image brightness"
+                      >
+                        <Sun size={16} aria-hidden />
+                        {viewportBrightness !== 1 && (
+                          <>
+                            <span className="text-[10px] font-mono tabular-nums">
+                              {Math.round(viewportBrightness * 100)}%
+                            </span>
+                            <span
+                              className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-primary ring-2 ring-card"
+                              aria-hidden
+                            />
+                          </>
+                        )}
+                      </button>
+                    ) : (
+                      <div className="flex items-center gap-2 bg-card/95 backdrop-blur-md border border-border rounded-lg px-2.5 py-2 shadow-lg min-h-[44px]">
+                        <Sun size={16} aria-hidden className="shrink-0 text-foreground" />
+                        <input
+                          type="range"
+                          min={50}
+                          max={200}
+                          step={5}
+                          value={Math.round(viewportBrightness * 100)}
+                          onChange={(e) =>
+                            setViewportBrightness(
+                              Math.max(0.5, Math.min(2, Number(e.target.value) / 100)),
+                            )
+                          }
+                          className="h-6 w-32 cursor-pointer accent-primary sm:w-40"
+                          aria-label="Image brightness"
+                        />
+                        <span className="text-[10px] font-mono text-muted-foreground min-w-[2.5rem] text-center tabular-nums">
+                          {Math.round(viewportBrightness * 100)}%
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setViewportBrightness(1)}
+                          className="px-2 py-1 text-[10px] font-medium text-muted-foreground hover:text-foreground disabled:opacity-40"
+                          title="Reset brightness"
+                          disabled={viewportBrightness === 1}
+                        >
+                          Reset
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setBrightnessOpen(false)}
+                          className="p-1.5 rounded-md hover:bg-muted text-muted-foreground"
+                          title="Close brightness"
+                          aria-label="Close brightness panel"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
-                {photoReviewFocus ? (
+                {photoReviewFocus && (
                   <div className="pointer-events-none absolute bottom-14 left-1/2 -translate-x-1/2 z-10 text-[10px] text-background/90 bg-foreground/45 px-2 py-0.5 rounded-full max-w-[92%] text-center">
                     Tap the photo again for zoom, frame dots, and navigation
                   </div>
-                ) : (
-                  <>
-                    <div className="pointer-events-none absolute bottom-14 left-1/2 -translate-x-1/2 z-10 hidden sm:block text-[10px] text-background/80 bg-foreground/30 px-2 py-0.5 rounded-full max-w-[90%] text-center">
-                      ← → frames · scroll zooms when fit · when zoomed scroll pans, Ctrl+scroll zooms · drag to pan · pinch to zoom (touch)
-                    </div>
-                    <div className="pointer-events-none absolute bottom-14 left-1/2 -translate-x-1/2 z-10 sm:hidden text-[10px] text-background/90 bg-foreground/40 px-2 py-0.5 rounded-full max-w-[92%] text-center">
-                      Pinch to zoom · tap photo to hide on-screen controls (and arrows when a clean frame is available)
-                    </div>
-                  </>
                 )}
+                {/* The desktop scroll/pinch help overlay was removed — those controls are intuitive
+                    and the extra chrome cluttered the image. The photo-focus hint above still
+                    shows because it explains a non-obvious mode toggle. */}
 
                 {partFrames.length > 0 && (partFrames.length > 1 || navNextEnabled || navPrevEnabled) && !photoReviewFocus && (
                   <>

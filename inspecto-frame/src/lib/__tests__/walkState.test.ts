@@ -102,6 +102,14 @@ describe('computeWalkState', () => {
     expect(state.nextPart?.name).toBe(orderedAll[0].name);
   });
 
+  it('subset parts list shrinks totalParts and walk order to that subset only', () => {
+    const subset = orderedAll.slice(0, 4);
+    const state = computeWalkState(subset, new Set(), null);
+    expect(state.totalParts).toBe(4);
+    expect(state.nextPart?.name).toBe(subset[0].name);
+    expect(state.areaProgress.every((a) => a.total <= 4)).toBe(true);
+  });
+
   describe('onlyDamagedNext option', () => {
     it('skips undamaged parts when picking nextPart', () => {
       // Active = first part in walk order. Damaged = some later part. Everything between should be skipped.

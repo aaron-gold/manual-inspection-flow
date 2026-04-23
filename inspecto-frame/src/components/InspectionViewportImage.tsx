@@ -9,6 +9,11 @@ type Props = {
   onZoomChange: (z: number) => void;
   /** Single tap / click on the photo (after a pinch, clicks are ignored briefly). */
   onPhotoTap?: () => void;
+  /**
+   * CSS `filter: brightness(X)` applied to the rendered image. 1 = untouched, &gt;1 = lighter,
+   * &lt;1 = darker. Used for inspecting underexposed scan frames.
+   */
+  brightness?: number;
 };
 
 /**
@@ -22,6 +27,7 @@ export default function InspectionViewportImage({
   zoom,
   onZoomChange,
   onPhotoTap,
+  brightness = 1,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
@@ -144,7 +150,11 @@ export default function InspectionViewportImage({
 
   const onPointerDown = useCallback(
     (e: React.PointerEvent) => {
-      if (zoom <= 1 || e.button !== 0) return;
+      if (zoom <= 1) return;
+      // Only the primary pointer starts a pan — prevents a second finger (pinch-zoom) or a
+      // right-click from also starting a drag. Works uniformly for mouse, touch, and pen.
+      if (!e.isPrimary) return;
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
       const el = scrollRef.current;
       if (!el) return;
       el.setPointerCapture(e.pointerId);
@@ -214,9 +224,19 @@ export default function InspectionViewportImage({
       onClick={onPhotoClick}
       style={{ touchAction: 'none' }}
     >
+      {/*
+        At zoom=1 the wrapper is exactly the viewport (min-width/height 100%) so the fit image
+        centers cleanly. At zoom>1 the wrapper grows to `max-content` in both axes, which lets
+        the scroll container see a wider/taller child and enables pan in any direction.
+      */}
       <div
-        className="box-border flex min-h-full w-full min-w-0 flex-1 flex-col items-center justify-center p-2"
-        style={{ minHeight: '100%' }}
+        className="box-border flex items-center justify-center p-2"
+        style={{
+          minWidth: '100%',
+          minHeight: '100%',
+          width: 'max-content',
+          height: 'max-content',
+        }}
       >
         <UveyeAuthenticatedImage
           src={src}
@@ -224,12 +244,12 @@ export default function InspectionViewportImage({
           onLoad={onImgLoad}
           draggable={false}
           className="select-none bg-transparent"
-          style={
-            displayW && displayH
+          style={{
+            ...(displayW && displayH
               ? {
                   width: displayW,
                   height: displayH,
-                  objectFit: 'contain',
+                  objectFit: 'contain' as const,
                   maxWidth: 'none',
                   maxHeight: 'none',
                 }
@@ -238,9 +258,11 @@ export default function InspectionViewportImage({
                   maxHeight: '100%',
                   width: 'auto',
                   height: 'auto',
-                  objectFit: 'contain',
-                }
-          }
+                  objectFit: 'contain' as const,
+                }),
+            // Brightness filter is applied here so both zoom modes (fit + magnified) benefit.
+            ...(brightness !== 1 ? { filter: `brightness(${brightness})` } : {}),
+          }}
         />
       </div>
     </div>

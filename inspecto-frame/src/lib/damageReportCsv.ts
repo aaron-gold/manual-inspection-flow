@@ -44,6 +44,12 @@ export type DamageReportTableRow = {
   widthMm: string;
   heightMm: string;
   notes: string;
+  /**
+   * Detection identifier from the UVeye payload (e.g. `atlas.detections[].id`,
+   * `artemis.*.wallDetections[].id`). Falls back to the internal numeric id for
+   * manual / camera rows that don't come from the payload.
+   */
+  detectionId: string;
 };
 
 function escapeCsvCell(s: string): string {
@@ -217,6 +223,8 @@ export function buildDamageReportData(
     widthMm: fmtMm(d.sizeWidthMm),
     heightMm: fmtMm(d.sizeHeightMm),
     notes: notesForDamage(d),
+    // Prefer the UVeye detection id; fall back to the internal id for manual rows that don't come from the payload.
+    detectionId: d.reportId?.trim() || String(d.id),
   }));
 
   return {
@@ -285,6 +293,7 @@ export function buildDamageReportCsv(
   lines.push('');
   lines.push(
     [
+      'Detection ID',
       'Area',
       'Source',
       'Status',
@@ -302,6 +311,7 @@ export function buildDamageReportCsv(
   for (const r of rows) {
     lines.push(
       [
+        escapeCsvCell(r.detectionId),
         escapeCsvCell(r.area),
         escapeCsvCell(r.source),
         escapeCsvCell(r.status),
