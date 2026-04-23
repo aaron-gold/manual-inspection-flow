@@ -34,6 +34,8 @@ export type DamageReportMeta = {
 };
 
 export type DamageReportTableRow = {
+  /** UVeye inspection id for this export (repeated on each row for spreadsheet filters / joins). */
+  inspectionId: string;
   area: string;
   /** AI pipeline (Atlas, Artemis, …) or Manual for inspector-added / camera rows. */
   source: string;
@@ -214,6 +216,7 @@ export function buildDamageReportData(
   const sortedDamages = [...damages].sort(compareDamagesForReport);
 
   const rows: DamageReportTableRow[] = sortedDamages.map((d) => ({
+    inspectionId,
     area: areaLabelForDamageReport(d.part),
     source: sourceLabelForDamage(d),
     status: reviewStatusForDamage(d),
@@ -294,6 +297,7 @@ export function buildDamageReportCsv(
   lines.push(
     [
       'Detection ID',
+      'Inspection ID',
       'Area',
       'Source',
       'Status',
@@ -312,6 +316,7 @@ export function buildDamageReportCsv(
     lines.push(
       [
         escapeCsvCell(r.detectionId),
+        escapeCsvCell(r.inspectionId),
         escapeCsvCell(r.area),
         escapeCsvCell(r.source),
         escapeCsvCell(r.status),

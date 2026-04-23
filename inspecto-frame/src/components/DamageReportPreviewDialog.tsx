@@ -111,10 +111,11 @@ export function DamageReportPreviewDialog({
           </dl>
 
           <div className="overflow-x-auto rounded-md border border-border">
-            <table className="w-full min-w-[760px] border-collapse text-left text-xs">
+            <table className="w-full min-w-[840px] border-collapse text-left text-xs">
               <thead className="sticky top-0 z-10 bg-muted/95 backdrop-blur supports-[backdrop-filter]:bg-muted/80">
                 <tr className="border-b border-border">
                   <th className="px-2 py-2 font-semibold">Detection ID</th>
+                  <th className="px-2 py-2 font-semibold">Inspection ID</th>
                   <th className="px-2 py-2 font-semibold">Area</th>
                   <th className="px-2 py-2 font-semibold">Source</th>
                   <th className="px-2 py-2 font-semibold">Status</th>
@@ -130,7 +131,7 @@ export function DamageReportPreviewDialog({
                 {rows.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={10}
+                      colSpan={11}
                       className="px-3 py-8 text-center text-muted-foreground"
                     >
                       No damage rows yet. Confirm or add detections to populate this report.
@@ -144,6 +145,12 @@ export function DamageReportPreviewDialog({
                         title={r.detectionId}
                       >
                         {r.detectionId}
+                      </td>
+                      <td
+                        className="px-2 py-1.5 align-top font-mono text-[10px] text-muted-foreground max-w-[200px] truncate"
+                        title={r.inspectionId || '—'}
+                      >
+                        {r.inspectionId || '—'}
                       </td>
                       <td className="px-2 py-1.5 align-top">{r.area}</td>
                       <td className="px-2 py-1.5 align-top">{r.source}</td>

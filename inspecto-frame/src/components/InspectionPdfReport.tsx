@@ -116,6 +116,7 @@ export async function generateInspectionPdf({
   const { rows } = buildDamageReportData(payload, damages);
   const tableData = rows.map((r) => [
     r.detectionId,
+    r.inspectionId,
     r.area,
     r.source,
     r.status,
@@ -126,7 +127,7 @@ export async function generateInspectionPdf({
 
   autoTable(doc, {
     startY: y,
-    head: [['Detection ID', 'Area', 'Source', 'Status', 'Part', 'Damage', 'Notes']],
+    head: [['Detection ID', 'Inspection ID', 'Area', 'Source', 'Status', 'Part', 'Damage', 'Notes']],
     body: tableData,
     theme: 'striped',
     headStyles: { fillColor: [60, 60, 60], fontSize: 8 },
@@ -134,13 +135,14 @@ export async function generateInspectionPdf({
     margin: { left: 14, right: 14 },
     /** Keep Source readable (was often blank before module fallback; column must not collapse). */
     columnStyles: {
-      0: { cellWidth: 30, font: 'courier', fontSize: 6 },
-      1: { cellWidth: 20 },
-      2: { cellWidth: 30 },
-      3: { cellWidth: 18 },
-      4: { cellWidth: 24 },
-      5: { cellWidth: 28 },
-      6: { cellWidth: 'auto' },
+      0: { cellWidth: 28, font: 'courier', fontSize: 6 },
+      1: { cellWidth: 28, font: 'courier', fontSize: 6 },
+      2: { cellWidth: 18 },
+      3: { cellWidth: 28 },
+      4: { cellWidth: 16 },
+      5: { cellWidth: 22 },
+      6: { cellWidth: 24 },
+      7: { cellWidth: 'auto' },
     },
   });
 
