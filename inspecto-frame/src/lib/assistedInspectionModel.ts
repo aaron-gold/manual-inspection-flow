@@ -27,6 +27,9 @@ export interface Damage {
   atlasFrameIndex?: number;
   isDuplicate?: boolean;
   flagged?: boolean;
+  /** Free-text note the inspector enters when flagging for QA/follow-up. Persists with the
+   * damage and is surfaced in the CSV/PDF notes column and the summary view. */
+  flagComment?: string;
   damageName?: string;
   reportId?: string;
   /** Which UVeye pipeline produced this row (for CSV/PDF reports). */
@@ -42,6 +45,8 @@ export interface Damage {
   /** Evidence image from camera / gallery (same capture as `CapturedPhotoEntry` when linked). */
   captureDataUrl?: string;
   captureImageUrl?: string;
+  /** Additional evidence images for the same manual row (first image remains in `captureDataUrl`). */
+  captureDataUrls?: string[];
 }
 
 /**

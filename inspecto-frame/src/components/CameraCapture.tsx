@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
-import { Camera, Image, X, RotateCcw } from 'lucide-react';
+import { Camera, Image, ImagePlus, X, RotateCcw, Trash2 } from 'lucide-react';
 import { humanizeDetectionType } from '@/services/uveyeApi';
 import { UVeye_CATALOG_DAMAGE_CHECK_TYPES } from '@/lib/uveyeCatalogDamageTypes';
 import {
@@ -10,6 +10,10 @@ import {
 } from '@/lib/partDamageCatalog';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
+import { SearchableOptionPicker } from '@/components/SearchableOptionPicker';
+
+/** Cap per missed-damage save to keep the browser responsive with large JPEG data URLs. */
+const MAX_MANUAL_PHOTOS = 15;
 
 export const MANUAL_DAMAGE_TYPES = [
   'Scratch',
@@ -28,11 +32,11 @@ function newCaptureId(): string {
 }
 
 export type CapturedPhotoPayload = {
-  /** Omitted when the inspector logs missed damage without a photo. */
-  dataUrl?: string;
+  /** Evidence images (empty if the inspector saves without photos). */
+  dataUrls: string[];
   partName: string;
   damageType: string;
-  /** Links the saved photo to the matching manual damage row in the inspection. */
+  /** Links saved photos to the matching manual damage row in the inspection. */
   captureId: string;
 };
 
@@ -68,8 +72,10 @@ export default function CameraCapture({
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const [mode, setMode] = useState<'menu' | 'live' | 'details'>('menu');
+  /** When `append`, the next camera/gallery result adds to `pendingDataUrls` instead of opening a fresh details form. */
+  const [menuIntent, setMenuIntent] = useState<'default' | 'append'>('default');
   const [error, setError] = useState<string | null>(null);
-  const [pendingDataUrl, setPendingDataUrl] = useState<string | null>(null);
+  const [pendingDataUrls, setPendingDataUrls] = useState<string[]>([]);
   const [selectedPart, setSelectedPart] = useState('');
   const [damageType, setDamageType] = useState<string>(MANUAL_DAMAGE_TYPES[0]);
   const [useCatalogPicker, setUseCatalogPicker] = useState(false);
@@ -114,17 +120,24 @@ export default function CameraCapture({
     return () => stopStream();
   }, [stopStream]);
 
-  const goToDetails = (dataUrl: string) => {
-    stopStream();
-    setMode('details');
-    setPendingDataUrl(dataUrl);
-    setUseCatalogPicker(false);
-    setCatalogArea(CATALOG_AREA_ORDER[0]);
-    const suggested =
-      suggestedPartName && partNames.includes(suggestedPartName) ? suggestedPartName : '';
-    setSelectedPart(suggested || partNames[0] || '');
-    setDamageType(MANUAL_DAMAGE_TYPES[0]);
-  };
+  const openDetailsFromCapture = useCallback(
+    (urls: string[], resetFormFields: boolean) => {
+      stopStream();
+      setError(null);
+      setMode('details');
+      setPendingDataUrls(urls);
+      setMenuIntent('default');
+      if (resetFormFields) {
+        setUseCatalogPicker(false);
+        setCatalogArea(CATALOG_AREA_ORDER[0]);
+        const suggested =
+          suggestedPartName && partNames.includes(suggestedPartName) ? suggestedPartName : '';
+        setSelectedPart(suggested || partNames[0] || '');
+        setDamageType(MANUAL_DAMAGE_TYPES[0]);
+      }
+    },
+    [partNames, suggestedPartName],
+  );
 
   const applyVehicleMapDefaults = useCallback(() => {
     const suggested =
@@ -133,14 +146,9 @@ export default function CameraCapture({
     setDamageType(MANUAL_DAMAGE_TYPES[0]);
   }, [partNames, suggestedPartName]);
 
-  /** Same as after a capture, but part + damage only (no image). */
+  /** Same as after a capture, but part + damage only (no images). */
   const goToDetailsWithoutPhoto = () => {
-    stopStream();
-    setMode('details');
-    setPendingDataUrl(null);
-    setUseCatalogPicker(false);
-    setCatalogArea(CATALOG_AREA_ORDER[0]);
-    applyVehicleMapDefaults();
+    openDetailsFromCapture([], true);
   };
 
   const applyCatalogDefaultsForArea = useCallback(
@@ -205,21 +213,69 @@ export default function CameraCapture({
     if (!ctx) return;
     ctx.drawImage(video, 0, 0);
     const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
-    setMode('menu');
-    goToDetails(dataUrl);
+    stopStream();
+    if (menuIntent === 'append') {
+      setPendingDataUrls((prev) => {
+        const merged = [...prev, dataUrl];
+        if (merged.length > MAX_MANUAL_PHOTOS) {
+          setError(`Maximum ${MAX_MANUAL_PHOTOS} photos per finding.`);
+        }
+        return merged.slice(0, MAX_MANUAL_PHOTOS);
+      });
+      setMode('details');
+      setMenuIntent('default');
+    } else {
+      openDetailsFromCapture([dataUrl], true);
+    }
   };
 
-  const handleGalleryFile = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        goToDetails(reader.result);
-      }
-    };
-    reader.readAsDataURL(file);
+  const readFilesAsDataUrls = (files: FileList | File[]) =>
+    Promise.all(
+      Array.from(files).map(
+        (file) =>
+          new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+              if (typeof reader.result === 'string') resolve(reader.result);
+              else reject(new Error('Invalid read result'));
+            };
+            reader.onerror = () => reject(reader.error ?? new Error('Read failed'));
+            reader.readAsDataURL(file);
+          }),
+      ),
+    );
+
+  const handleGalleryFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files?.length) return;
+    setError(null);
+    let dataUrls: string[];
+    try {
+      dataUrls = await readFilesAsDataUrls(files);
+    } catch {
+      setError('Could not read one or more images. Try again.');
+      e.target.value = '';
+      return;
+    }
     e.target.value = '';
+
+    if (menuIntent === 'append') {
+      setPendingDataUrls((prev) => {
+        const merged = [...prev, ...dataUrls];
+        if (merged.length > MAX_MANUAL_PHOTOS) {
+          setError(`Only the first ${MAX_MANUAL_PHOTOS} photos are kept for this finding.`);
+        }
+        return merged.slice(0, MAX_MANUAL_PHOTOS);
+      });
+      setMode('details');
+      setMenuIntent('default');
+    } else {
+      const capped = dataUrls.slice(0, MAX_MANUAL_PHOTOS);
+      openDetailsFromCapture(capped, true);
+      if (dataUrls.length > MAX_MANUAL_PHOTOS) {
+        setError(`Only the first ${MAX_MANUAL_PHOTOS} photos are kept for this finding.`);
+      }
+    }
   };
 
   const submitDetails = () => {
@@ -230,13 +286,11 @@ export default function CameraCapture({
         catalogDamages.includes(damageType) ? damageType : catalogDamages[0] || MANUAL_DAMAGE_TYPES[0];
       dt = resolved.trim() || MANUAL_DAMAGE_TYPES[0];
     } else {
-      const resolvedType = damageTypeOptions.includes(damageType)
-        ? damageType
-        : damageTypeOptions[0] || MANUAL_DAMAGE_TYPES[0];
-      dt = resolvedType.trim() || MANUAL_DAMAGE_TYPES[0];
+      const t = damageType.trim();
+      dt = t || damageTypeOptions[0] || MANUAL_DAMAGE_TYPES[0];
     }
     onCapture({
-      ...(pendingDataUrl ? { dataUrl: pendingDataUrl } : {}),
+      dataUrls: pendingDataUrls.slice(0, MAX_MANUAL_PHOTOS),
       partName: selectedPart.trim(),
       damageType: dt,
       captureId: newCaptureId(),
@@ -249,6 +303,8 @@ export default function CameraCapture({
   };
 
   if (mode === 'details') {
+    const photoCount = pendingDataUrls.length;
+    const primaryPreview = pendingDataUrls[0];
     return (
       <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center animate-in fade-in duration-200 p-4">
         <div className="bg-card rounded-2xl shadow-2xl border border-border w-full max-w-lg max-h-[92vh] overflow-hidden flex flex-col">
@@ -256,8 +312,10 @@ export default function CameraCapture({
             <div>
               <h3 className="font-bold text-foreground text-base">Document missed damage</h3>
               <p className="text-xs text-muted-foreground mt-0.5">
-                {pendingDataUrl
-                  ? 'Pick the car part and damage type so this finding matches the vehicle map and reports.'
+                {photoCount > 0
+                  ? photoCount > 1
+                    ? 'Pick part and damage type. Every photo below is saved with this single finding.'
+                    : 'Pick the car part and damage type so this finding matches the vehicle map and reports.'
                   : 'No photo — choose part and damage so this missed finding appears on the map and in reports.'}
               </p>
             </div>
@@ -271,18 +329,60 @@ export default function CameraCapture({
           </div>
 
           <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-4">
-            <div className="rounded-xl overflow-hidden border border-border bg-muted/30 aspect-video flex items-center justify-center">
-              {pendingDataUrl ? (
-                <img src={pendingDataUrl} alt="Captured" className="max-h-full max-w-full object-contain" />
+            <div className="space-y-3">
+              {photoCount > 0 ? (
+                <>
+                  <div className="rounded-xl overflow-hidden border border-border bg-muted/30 aspect-video flex items-center justify-center">
+                    <img
+                      src={primaryPreview}
+                      alt="Primary capture"
+                      className="max-h-full max-w-full object-contain"
+                    />
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {pendingDataUrls.map((url, idx) => (
+                      <div
+                        key={`${idx}-${url.slice(0, 48)}`}
+                        className="relative w-16 h-16 rounded-lg overflow-hidden border border-border shrink-0"
+                      >
+                        <img src={url} alt="" className="w-full h-full object-cover" />
+                        <button
+                          type="button"
+                          onClick={() => setPendingDataUrls((prev) => prev.filter((_, i) => i !== idx))}
+                          className="absolute top-0.5 right-0.5 rounded-full bg-black/65 p-1 text-white hover:bg-black/80"
+                          aria-label={`Remove photo ${idx + 1}`}
+                        >
+                          <Trash2 size={12} strokeWidth={2.5} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </>
               ) : (
-                <div className="flex flex-col items-center justify-center gap-2 px-6 text-center text-muted-foreground">
-                  <Image className="opacity-40" size={40} aria-hidden />
-                  <p className="text-sm font-medium text-foreground">No photo attached</p>
-                  <p className="text-xs max-w-sm">
-                    You can go back to add a picture, or save this entry with part and damage only.
-                  </p>
+                <div className="rounded-xl overflow-hidden border border-border bg-muted/30 aspect-video flex items-center justify-center">
+                  <div className="flex flex-col items-center justify-center gap-2 px-6 text-center text-muted-foreground">
+                    <Image className="opacity-40" size={40} aria-hidden />
+                    <p className="text-sm font-medium text-foreground">No photo attached</p>
+                    <p className="text-xs max-w-sm">
+                      You can go back to add a picture, or save this entry with part and damage only.
+                    </p>
+                  </div>
                 </div>
               )}
+              {photoCount < MAX_MANUAL_PHOTOS ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setError(null);
+                    setMenuIntent('append');
+                    setMode('menu');
+                  }}
+                  className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl border border-dashed border-border text-sm font-medium text-foreground hover:bg-muted/50"
+                >
+                  <ImagePlus size={18} />
+                  {photoCount === 0 ? 'Add photo' : 'Add another photo'}
+                </button>
+              ) : null}
             </div>
 
             <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/20 px-3 py-2.5">
@@ -329,96 +429,76 @@ export default function CameraCapture({
                   </select>
                 </div>
 
-                <div>
-                  <label htmlFor="camera-capture-part" className="text-xs font-semibold text-foreground block mb-1.5">
-                    Part (this area)
-                  </label>
-                  <select
-                    id="camera-capture-part"
-                    value={catalogParts.includes(selectedPart) ? selectedPart : catalogParts[0] || ''}
-                    onChange={(e) => setSelectedPart(e.target.value)}
-                    className="w-full px-3 py-2.5 text-sm rounded-lg border border-input bg-background text-foreground"
-                  >
-                    {catalogParts.length === 0 ? (
-                      <option value="">No parts in catalog for this area</option>
-                    ) : (
-                      catalogParts.map((name) => (
-                        <option key={name} value={name}>
-                          {name}
-                        </option>
-                      ))
-                    )}
-                  </select>
+                <div className="w-full min-w-0 max-w-full">
+                  <SearchableOptionPicker
+                    id="camera-capture-catalog-part"
+                    label="Part (this area)"
+                    value={
+                      catalogParts.length === 0
+                        ? ''
+                        : catalogParts.includes(selectedPart)
+                          ? selectedPart
+                          : catalogParts[0] || ''
+                    }
+                    onChange={setSelectedPart}
+                    options={catalogParts}
+                    placeholder="Search parts…"
+                    allowCustomValue={false}
+                    emptyListHint="No parts in catalog for this area"
+                  />
                 </div>
 
-                <div>
-                  <label htmlFor="camera-capture-damage" className="text-xs font-semibold text-foreground block mb-1.5">
-                    Damage (this area)
-                  </label>
-                  <select
-                    id="camera-capture-damage"
+                <div className="w-full min-w-0 max-w-full">
+                  <SearchableOptionPicker
+                    id="camera-capture-catalog-damage"
+                    label="Damage (this area)"
                     value={
-                      catalogDamages.includes(damageType) ? damageType : catalogDamages[0] || MANUAL_DAMAGE_TYPES[0]
+                      catalogDamages.length === 0
+                        ? MANUAL_DAMAGE_TYPES[0]
+                        : catalogDamages.includes(damageType)
+                          ? damageType
+                          : catalogDamages[0] || MANUAL_DAMAGE_TYPES[0]
                     }
-                    onChange={(e) => setDamageType(e.target.value)}
-                    className="w-full px-3 py-2.5 text-sm rounded-lg border border-input bg-background text-foreground"
-                  >
-                    {catalogDamages.length === 0 ? (
-                      <option value="">{MANUAL_DAMAGE_TYPES[0]}</option>
-                    ) : (
-                      catalogDamages.map((t) => (
-                        <option key={t} value={t}>
-                          {t}
-                        </option>
-                      ))
-                    )}
-                  </select>
+                    onChange={setDamageType}
+                    options={catalogDamages.length === 0 ? [...MANUAL_DAMAGE_TYPES] : catalogDamages}
+                    placeholder="Search damage types…"
+                    allowCustomValue={false}
+                    emptyListHint="No damage types in catalog for this area"
+                  />
                 </div>
               </>
             ) : (
               <>
-                <div>
-                  <label htmlFor="camera-capture-part" className="text-xs font-semibold text-foreground block mb-1.5">
-                    Car part
-                  </label>
-                  <input
-                    id="camera-capture-part"
-                    type="text"
-                    list="camera-capture-part-suggestions"
+                <div className="w-full min-w-0 max-w-full">
+                  <SearchableOptionPicker
+                    id="camera-capture-vehiclemap-part"
+                    label="Car part"
                     value={selectedPart}
-                    onChange={(e) => setSelectedPart(e.target.value)}
-                    placeholder="Pick from list or type any panel name…"
-                    className="w-full px-3 py-2.5 text-sm rounded-lg border border-input bg-background text-foreground placeholder:text-muted-foreground"
+                    onChange={setSelectedPart}
+                    options={partNames}
+                    placeholder="Search or choose a panel…"
+                    allowCustomValue
+                    emptyListHint="Type a panel name, or pick a suggestion from the list."
                   />
-                  <datalist id="camera-capture-part-suggestions">
-                    {partNames.map((name) => (
-                      <option key={name} value={name} />
-                    ))}
-                  </datalist>
                   <p className="text-[11px] text-muted-foreground mt-1.5">
-                    Suggestions come from the vehicle map. You can enter a part UVeye did not list.
+                    Suggestions from the vehicle map. Use “Use …” if your panel is not in the list.
                   </p>
                 </div>
 
-                <div>
-                  <label htmlFor="camera-capture-damage" className="text-xs font-semibold text-foreground block mb-1.5">
-                    Damage type
-                  </label>
-                  <select
-                    id="camera-capture-damage"
-                    value={damageTypeOptions.includes(damageType) ? damageType : damageTypeOptions[0]}
-                    onChange={(e) => setDamageType(e.target.value)}
-                    className="w-full px-3 py-2.5 text-sm rounded-lg border border-input bg-background text-foreground"
-                  >
-                    {damageTypeOptions.map((t) => (
-                      <option key={t} value={t}>
-                        {t}
-                      </option>
-                    ))}
-                  </select>
+                <div className="w-full min-w-0 max-w-full">
+                  <SearchableOptionPicker
+                    id="camera-capture-vehiclemap-damage"
+                    label="Damage type"
+                    value={damageType || damageTypeOptions[0] || MANUAL_DAMAGE_TYPES[0]}
+                    onChange={setDamageType}
+                    options={damageTypeOptions}
+                    placeholder="Search or choose damage type…"
+                    allowCustomValue
+                    emptyListHint="Type a damage name, or pick a suggestion. Use “Use …” to add a custom type."
+                  />
                   <p className="text-[11px] text-muted-foreground mt-1.5">
-                    Quick picks first, then the full UVeye body / tire / undercarriage damage list, then any
-                    extra types from this scan.
+                    Presets, full UVeye catalog, and any extra types from this scan. Custom types are
+                    allowed.
                   </p>
                 </div>
               </>
@@ -440,7 +520,11 @@ export default function CameraCapture({
                 onClick={submitDetails}
                 className="px-5 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-40 disabled:pointer-events-none"
               >
-                {pendingDataUrl ? 'Save photo' : 'Save without photo'}
+                {photoCount === 0
+                  ? 'Save without photo'
+                  : photoCount === 1
+                    ? 'Save photo'
+                    : `Save ${photoCount} photos`}
               </button>
             </div>
             <button
@@ -448,7 +532,8 @@ export default function CameraCapture({
               onClick={() => {
                 stopStream();
                 setMode('menu');
-                setPendingDataUrl(null);
+                setPendingDataUrls([]);
+                setMenuIntent('default');
               }}
               className="text-center text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline py-1"
             >
@@ -467,7 +552,9 @@ export default function CameraCapture({
           <div>
             <h3 className="font-bold text-foreground text-base">Capture missed damage</h3>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Document damage the scan did not flag — add a photo, then choose part and damage type.
+              {menuIntent === 'append'
+                ? 'Add another photo for this finding. You can pick several from the gallery at once.'
+                : 'Document damage the scan did not flag — add one or more photos, then choose part and damage type.'}
             </p>
           </div>
           <button
@@ -504,13 +591,27 @@ export default function CameraCapture({
                 <RotateCcw size={18} />
               </button>
             </div>
-            <button
-              type="button"
-              onClick={goToDetailsWithoutPhoto}
-              className="w-full text-center text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline py-2"
-            >
-              Skip photo
-            </button>
+            {menuIntent === 'append' ? (
+              <button
+                type="button"
+                onClick={() => {
+                  stopStream();
+                  setMode('details');
+                  setMenuIntent('default');
+                }}
+                className="w-full text-center text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline py-2"
+              >
+                Back to part & damage
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={goToDetailsWithoutPhoto}
+                className="w-full text-center text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline py-2"
+              >
+                Skip photo
+              </button>
+            )}
           </div>
         )}
 
@@ -549,17 +650,34 @@ export default function CameraCapture({
               </div>
               <div>
                 <span className="text-sm font-semibold text-foreground block">Choose from gallery</span>
-                <span className="text-xs text-muted-foreground">Select an existing photo</span>
+                <span className="text-xs text-muted-foreground">
+                  {menuIntent === 'append'
+                    ? 'Select one or more images (multi-select supported)'
+                    : 'Select one or more existing images'}
+                </span>
               </div>
             </button>
 
-            <button
-              type="button"
-              onClick={goToDetailsWithoutPhoto}
-              className="w-full text-center text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline py-2"
-            >
-              Skip photo
-            </button>
+            {menuIntent === 'append' ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setMode('details');
+                  setMenuIntent('default');
+                }}
+                className="w-full text-center text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline py-2"
+              >
+                Back to part & damage
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={goToDetailsWithoutPhoto}
+                className="w-full text-center text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline py-2"
+              >
+                Skip photo
+              </button>
+            )}
             <button
               type="button"
               onClick={handleClose}
@@ -574,7 +692,8 @@ export default function CameraCapture({
           ref={galleryInputRef}
           type="file"
           accept="image/*"
-          onChange={handleGalleryFile}
+          multiple
+          onChange={(e) => void handleGalleryFile(e)}
           className="hidden"
         />
         <input
@@ -582,7 +701,7 @@ export default function CameraCapture({
           type="file"
           accept="image/*"
           capture="environment"
-          onChange={handleGalleryFile}
+          onChange={(e) => void handleGalleryFile(e)}
           className="hidden"
         />
       </div>

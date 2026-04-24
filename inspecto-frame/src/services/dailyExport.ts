@@ -2,7 +2,11 @@ import JSZip from "jszip";
 import type { InspectionRecord } from "@/components/InspectionDashboard";
 import type { Damage } from "@/lib/assistedInspectionModel";
 import { inspectionHasManualDamage } from "@/lib/inspectionTiming";
-import type { UveyeInspectionResponse } from "@/services/uveyeApi";
+import {
+  buildUveyePortalSummaryUrl,
+  vehicleUniqueIdFromPayload,
+  type UveyeInspectionResponse,
+} from "@/services/uveyeApi";
 import type { CapturedPhotoEntry } from "@/types/capturedPhoto";
 
 function escapeCsvCell(s: string): string {
@@ -59,24 +63,6 @@ function damageRollup(
   };
 }
 
-function extractSiteId(payload: UveyeInspectionResponse | undefined): string {
-  if (!payload) return "";
-  const r = payload as Record<string, unknown>;
-  const v = r.siteId;
-  if (v == null) return "";
-  return typeof v === "string" ? v : String(v);
-}
-
-/** UVeye org / group identifier (portal URLs use `organizationId`). */
-function extractGroupId(payload: UveyeInspectionResponse | undefined): string {
-  if (!payload) return "";
-  const r = payload as Record<string, unknown>;
-  if (typeof r.groupId === "string" && r.groupId.trim()) return r.groupId.trim();
-  if (typeof r.group_id === "string" && r.group_id.trim()) return r.group_id.trim();
-  if (typeof r.organizationId === "string" && r.organizationId.trim()) return r.organizationId.trim();
-  return "";
-}
-
 function dataUrlToUint8Array(dataUrl: string): Uint8Array {
   const i = dataUrl.indexOf(",");
   if (i < 0) throw new Error("Invalid data URL");
@@ -106,6 +92,8 @@ export const DAILY_EXPORT_HEADERS = [
   "vehicle_make",
   "vehicle_model",
   "vin",
+  "vehicle_unique_id",
+  "uveye_portal_url",
   "color",
   "status",
   "timer_started_at_iso",
@@ -117,8 +105,6 @@ export const DAILY_EXPORT_HEADERS = [
   "rejected",
   "duplicated",
   "added",
-  "site_id",
-  "group_id",
   "capture_count",
 ] as const;
 
@@ -142,8 +128,8 @@ export function buildDailyActivityRows(input: DailyExportInput): {
     const review = input.reviewById[ins.id];
     const caps = input.capturesById[ins.id] ?? [];
     const roll = damageRollup(review, ins.damageCount);
-    const siteId = extractSiteId(payload);
-    const groupId = extractGroupId(payload);
+    const vehicleUniqueId = payload ? vehicleUniqueIdFromPayload(payload) : "";
+    const portalUrl = payload ? buildUveyePortalSummaryUrl(payload) ?? "" : "";
     const dmgs = review?.damages as Damage[] | undefined;
     const hasManual = inspectionHasManualDamage(Array.isArray(dmgs) ? dmgs : undefined);
     const durationCell =
@@ -160,6 +146,8 @@ export function buildDailyActivityRows(input: DailyExportInput): {
       ins.make,
       ins.model,
       ins.vin,
+      vehicleUniqueId,
+      portalUrl,
       ins.color,
       ins.status,
       ins.timerStartedAt?.toISOString() ?? "",
@@ -171,8 +159,6 @@ export function buildDailyActivityRows(input: DailyExportInput): {
       String(roll.rejected),
       String(roll.duplicated),
       String(roll.added),
-      siteId,
-      groupId,
       String(caps.length),
     ]);
   }
@@ -224,7 +210,8 @@ export async function buildDailyExportZip(input: DailyExportInput): Promise<Blob
       "- avi_damages: AI-sourced detection rows; added: inspector-added (non-AI) rows.",
       "- timer_started_at_iso / completed_at_iso / duration_seconds: local review timer (this browser).",
       "- has_manual_damage: 1 if any inspector-added damage row exists in saved review state.",
-      "- site_id / group_id: from UVeye payload when present (group_id uses organizationId or groupId).",
+      "- vehicle_unique_id: fleet / vehicle key from the UVeye payload when present.",
+      "- uveye_portal_url: UVeye web app inspection summary link when organizationId, siteId, and inspection uuid/id are present.",
       "",
       `Inspector: ${input.inspectorName || "(not set)"}`,
       `Generated: ${exportedAt}`,

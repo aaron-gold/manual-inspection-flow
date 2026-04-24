@@ -5,7 +5,7 @@ import {
   AlertTriangle,
   Download,
   ArrowLeft,
-  Camera,
+  Image as ImageIcon,
   Clock,
   ChevronDown,
   Flag,
@@ -45,10 +45,38 @@ interface Damage {
   captureId?: string;
   captureDataUrl?: string;
   captureImageUrl?: string;
+  captureDataUrls?: string[];
+}
+
+export type SummaryVehicleIdentity = {
+  /** May be from payload or "—" when missing in UI. */
+  vin: string;
+  uniqueId: string;
+  licensePlate: string;
+  licensePlateState: string;
+};
+
+function identityCell(label: string, value: string) {
+  const v = value.trim();
+  return (
+    <div className="min-w-0">
+      <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground mb-0.5">
+        {label}
+      </div>
+      <div
+        className="font-mono text-xs text-foreground break-all leading-snug"
+        title={v && v !== '—' ? v : undefined}
+      >
+        {v && v.length > 0 ? v : '—'}
+      </div>
+    </div>
+  );
 }
 
 interface InspectionSummaryProps {
   vehicleLabel: string;
+  /** VIN, plate, and uniqueId for the top of the summary. */
+  vehicleIdentity?: SummaryVehicleIdentity;
   damages: Damage[];
   payload: UveyeInspectionResponse;
   onBack: () => void;
@@ -116,6 +144,7 @@ const FILTER_ORDER: SummaryFilter[] = [
 
 export default function InspectionSummary({
   vehicleLabel,
+  vehicleIdentity,
   damages,
   payload,
   onBack,
@@ -130,7 +159,7 @@ export default function InspectionSummary({
   const approved = damages.filter(d => d.confirmed === true);
   const rejected = damages.filter(d => d.confirmed === false);
   const pending = damages.filter(d => d.confirmed == null);
-  /** Every detection row in this inspection (AI + manual / camera). */
+  /** Every detection row in this inspection (AI + manual / added photos). */
   const totalDamages = damages.length;
   const decidedCount = approved.length + rejected.length;
   const reviewProgressPct =
@@ -209,6 +238,27 @@ export default function InspectionSummary({
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-5 space-y-5">
+        {vehicleIdentity ? (
+          <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">
+              Vehicle
+            </h2>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 sm:gap-4">
+              {identityCell('VIN', vehicleIdentity.vin)}
+              {identityCell(
+                'License plate',
+                (() => {
+                  const p = vehicleIdentity.licensePlate;
+                  const st = vehicleIdentity.licensePlateState;
+                  if (!p || p === '—') return p || '—';
+                  if (!st || st === '—') return p;
+                  return `${p} · ${st}`;
+                })(),
+              )}
+              {identityCell('Unique id', vehicleIdentity.uniqueId)}
+            </div>
+          </div>
+        ) : null}
         {/* Stats: row 1 — totals & review mix; row 2 — progress & duplicates */}
         <div className="space-y-3">
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-6 gap-3">
@@ -217,7 +267,7 @@ export default function InspectionSummary({
               value={totalDamages}
               icon={<AlertTriangle size={16} />}
               color="text-foreground"
-              hint="All rows: AI + manual / camera"
+              hint="All rows: AI + manual (incl. added photos)"
             />
             <StatCard label="Approved" value={approved.length} icon={<CheckCircle size={16} />} color="text-primary" />
             <StatCard label="Reject" value={rejected.length} icon={<XCircle size={16} />} color="text-destructive" />
@@ -303,7 +353,7 @@ export default function InspectionSummary({
                 </p>
               ) : (
                 <p className="text-xs text-muted-foreground mt-1">
-                  Area, part, damage type, source (AI vs Manual), and review status. Camera captures appear as Manual rows.
+                  Area, part, damage type, source (AI vs Manual), and review status. Added photos show as Manual rows.
                 </p>
               )}
             </div>
@@ -371,10 +421,10 @@ export default function InspectionSummary({
         {unlinkedCaptures.length > 0 && (
           <div className="bg-card rounded-xl border border-border p-4">
             <h3 className="text-sm font-semibold text-foreground mb-1 flex items-center gap-2">
-              <Camera size={14} /> Additional captures ({unlinkedCaptures.length})
+              <ImageIcon size={14} /> Additional photos ({unlinkedCaptures.length})
             </h3>
             <p className="text-xs text-muted-foreground mb-3">
-              These photos are not yet tied to a detection row. New camera saves appear in the list above as Manual source.
+              These photos are not yet tied to a detection row. New saves from “Missed damage” appear above with Manual source.
             </p>
             <div className="grid grid-cols-3 gap-2">
               {unlinkedCaptures.map((photo, i) => (
@@ -439,15 +489,26 @@ function CollapsiblePart({
                   : 'bg-sky-50 border-sky-200/90 dark:bg-sky-950/40 dark:border-sky-800/80',
               )}
             >
-              {(d.captureDataUrl || d.captureImageUrl) && (
-                <div className="shrink-0 w-14 h-14 rounded-md overflow-hidden border border-border bg-muted">
-                  <img
-                    src={d.captureDataUrl ?? d.captureImageUrl ?? ''}
-                    alt=""
-                    className="w-full h-full object-cover"
-                  />
-                </div>
-              )}
+              {(() => {
+                const thumb =
+                  d.captureDataUrl?.trim() ||
+                  d.captureImageUrl?.trim() ||
+                  d.captureDataUrls?.find((u) => u?.trim())?.trim() ||
+                  '';
+                const extra =
+                  d.captureDataUrls && d.captureDataUrls.length > 1 ? d.captureDataUrls.length - 1 : 0;
+                if (!thumb) return null;
+                return (
+                  <div className="relative shrink-0 w-14 h-14 rounded-md overflow-hidden border border-border bg-muted">
+                    <img src={thumb} alt="" className="w-full h-full object-cover" />
+                    {extra > 0 ? (
+                      <span className="absolute bottom-0.5 right-0.5 rounded bg-black/70 px-1 py-0 text-[9px] font-semibold text-white">
+                        +{extra}
+                      </span>
+                    ) : null}
+                  </div>
+                );
+              })()}
               <div className="min-w-0 flex-1">
                 {d.damageName && (
                   <div className="font-semibold text-foreground text-sm leading-tight mb-0.5">{d.damageName}</div>
@@ -459,11 +520,28 @@ function CollapsiblePart({
                 <div className="text-muted-foreground">
                   <span className="text-muted-foreground font-normal">Source </span>
                   {d.ai ? 'AI' : 'Manual'}
-                  {(d.captureDataUrl || d.captureImageUrl) && (
-                    <span className="text-muted-foreground"> · camera</span>
+                  {(d.captureDataUrl ||
+                    d.captureImageUrl ||
+                    (d.captureDataUrls && d.captureDataUrls.length > 0)) && (
+                    <span className="text-muted-foreground">
+                      {' '}
+                      · added photo
+                      {d.captureDataUrls && d.captureDataUrls.length > 1
+                        ? ` (${d.captureDataUrls.length})`
+                        : ''}
+                    </span>
                   )}
                   {d.isDuplicate && <span className="ml-1">· duplicate</span>}
-                  {d.flagged && <span className="ml-1 text-amber-700 dark:text-amber-300">· flagged</span>}
+                  {d.flagged && (
+                    <span className="ml-1 text-amber-700 dark:text-amber-300">
+                      · flagged
+                      {d.flagComment ? (
+                        <span className="ml-1 italic text-amber-800/90 dark:text-amber-200/90">
+                          “{d.flagComment}”
+                        </span>
+                      ) : null}
+                    </span>
+                  )}
                 </div>
               </div>
               <span className="shrink-0 flex items-center gap-0.5 self-center">

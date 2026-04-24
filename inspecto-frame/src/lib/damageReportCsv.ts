@@ -66,7 +66,8 @@ function fmtMm(n: number | undefined): string {
 
 function hasCaptureEvidence(d: Damage): boolean {
   const cid = d.captureId?.trim();
-  return Boolean(cid || d.captureDataUrl || d.captureImageUrl);
+  const extra = d.captureDataUrls?.some((u) => Boolean(u?.trim()));
+  return Boolean(cid || d.captureDataUrl || d.captureImageUrl || extra);
 }
 
 /** AI / pipeline label or Manual for inspector-added rows (CSV, PDF, preview). Never blank for AI rows. */
@@ -115,10 +116,22 @@ export function reviewStatusForDamage(d: Damage): string {
   return 'Pending';
 }
 
+/**
+ * Build the free-text Notes column for CSV / PDF / preview.
+ *
+ * Order: Duplicate → Flagged (+ optional inspector comment). The inspector's flag comment
+ * (`d.flagComment`) is appended inline as "Flagged: <comment>" when present — this is the
+ * entire reason the flag dialog exists: QA downstream needs the *why*, not just the bit.
+ * Newlines inside the comment are collapsed to spaces so the field stays on one CSV cell
+ * without tripping Excel's line-wrap rules.
+ */
 function notesForDamage(d: Damage): string {
   const bits: string[] = [];
   if (d.isDuplicate) bits.push('Duplicate');
-  if (d.flagged) bits.push('Flagged');
+  if (d.flagged) {
+    const comment = (d.flagComment ?? '').replace(/\s+/g, ' ').trim();
+    bits.push(comment ? `Flagged: ${comment}` : 'Flagged');
+  }
   return bits.join('; ');
 }
 

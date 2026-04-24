@@ -376,15 +376,23 @@ export default function Index() {
                   <tbody>
                     {dailyPreview.rows.map((row, ri) => (
                       <tr key={ri} className="hover:bg-muted/40">
-                        {row.map((cell, ci) => (
-                          <td
-                            key={ci}
-                            className="border-b border-border/80 px-2 py-1.5 align-top max-w-[240px] truncate"
-                            title={cell}
-                          >
-                            {cell}
-                          </td>
-                        ))}
+                        {row.map((cell, ci) => {
+                          const col = dailyPreview.headers[ci];
+                          const isPortalUrl = col === "uveye_portal_url";
+                          return (
+                            <td
+                              key={ci}
+                              className={
+                                isPortalUrl
+                                  ? "border-b border-border/80 px-2 py-1.5 align-top max-w-[min(28rem,50vw)] break-all whitespace-normal text-left"
+                                  : "border-b border-border/80 px-2 py-1.5 align-top max-w-[240px] truncate"
+                              }
+                              title={cell}
+                            >
+                              {cell}
+                            </td>
+                          );
+                        })}
                       </tr>
                     ))}
                   </tbody>

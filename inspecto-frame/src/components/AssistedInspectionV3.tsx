@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import type { BodyType, InspectionRecord } from './InspectionDashboard';
 import CameraCapture from './CameraCapture';
 import type { CapturedPhotoEntry } from '@/types/capturedPhoto';
-import InspectionSummary from './InspectionSummary';
+import InspectionSummary, { type SummaryVehicleIdentity } from './InspectionSummary';
 import {
   buildCameraFramesFromResponse,
   collectHumanizedDamageTypesFromPayload,
@@ -341,6 +341,24 @@ export default function AssistedInspectionV3({
     [inspectionRecord?.vehicleUniqueId, payload],
   );
 
+  const summaryVehicleIdentity = useMemo((): SummaryVehicleIdentity => {
+    const root = payload as Record<string, unknown>;
+    const v = payload.vehicle as Record<string, unknown> | undefined;
+    const ir = inspectionRecord;
+    const vin = String(payload.vin ?? root.vin ?? (v as { vin?: string } | undefined)?.vin ?? '').trim();
+    const uniqueId = (ir?.vehicleUniqueId?.trim() || vehicleUniqueIdFromPayload(payload) || '').trim();
+    const licensePlate = String(
+      ir?.licensePlate ?? (v as { licensePlate?: string } | undefined)?.licensePlate ?? root.licensePlate ?? '',
+    ).trim();
+    const licensePlateState = String(
+      ir?.licensePlateState ??
+        (v as { licensePlateUsStateAbbreviation?: string } | undefined)?.licensePlateUsStateAbbreviation ??
+        root.licensePlateUsStateAbbreviation ??
+        '',
+    ).trim();
+    return { vin, uniqueId, licensePlate, licensePlateState };
+  }, [payload, inspectionRecord]);
+
   const [damages, setDamages] = useState<Damage[]>([]);
   /** False until payload→damages sync runs (empty `[]` must not count as “all reviewed”). */
   const [damagesReady, setDamagesReady] = useState(false);
@@ -436,12 +454,35 @@ export default function AssistedInspectionV3({
         isSyntheticDamageFrameId(d.frameId),
     );
     if (cap) {
-      const url = (cap.captureDataUrl ?? cap.captureImageUrl)?.trim();
-      if (url) {
-        const id = '__manual_evidence__';
+      const evidenceUrls: string[] = [];
+      if (cap.captureDataUrls?.length) {
+        for (const u of cap.captureDataUrls) {
+          const t = typeof u === 'string' ? u.trim() : '';
+          if (t) evidenceUrls.push(t);
+        }
+      } else {
+        const u = (cap.captureDataUrl ?? cap.captureImageUrl)?.trim();
+        if (u) evidenceUrls.push(u);
+      }
+      if (evidenceUrls.length > 0) {
+        if (evidenceUrls.length === 1) {
+          const id = '__manual_evidence__';
+          return {
+            partFrames: [{ id, camera: 'Inspector photo', frameNum: 1 }],
+            viewportFrameImages: { ...frameImages, [id]: evidenceUrls[0] },
+          };
+        }
+        const partFrames = evidenceUrls.map((_, i) => ({
+          id: `__manual_evidence_${i}__`,
+          camera: 'Inspector photo',
+          frameNum: i + 1,
+        }));
+        const extraImages = Object.fromEntries(
+          evidenceUrls.map((url, i) => [`__manual_evidence_${i}__`, url]),
+        );
         return {
-          partFrames: [{ id, camera: 'Inspector photo', frameNum: 1 }],
-          viewportFrameImages: { ...frameImages, [id]: url },
+          partFrames,
+          viewportFrameImages: { ...frameImages, ...extraImages },
         };
       }
       const id = '__manual_no_photo__';
@@ -490,9 +531,48 @@ export default function AssistedInspectionV3({
     setDamages(damages.map(d => (d.id === id ? { ...d, isDuplicate: !d.isDuplicate } : d)));
   };
 
-  const toggleFlag = (id: number) => {
-    setDamages(damages.map(d => (d.id === id ? { ...d, flagged: !d.flagged } : d)));
+  /**
+   * Flag now opens a free-text dialog so the inspector can record *why* a damage is being
+   * flagged (QA reason, billing exception, re-check note). We intentionally moved away from a
+   * silent toggle because flags without context were rarely actionable downstream (QA had to
+   * chase the inspector for the reason). The text is persisted on the damage and surfaced in
+   * the CSV/PDF notes column and in the summary view.
+   *
+   * Clicking the flag on an already-flagged damage re-opens the dialog pre-populated with the
+   * existing comment so the inspector can edit or remove the flag.
+   */
+  const [flagDialogDamageId, setFlagDialogDamageId] = useState<number | null>(null);
+  const [flagDraftText, setFlagDraftText] = useState('');
+  const openFlagDialog = (id: number) => {
+    const existing = damages.find(d => d.id === id);
+    setFlagDraftText(existing?.flagComment ?? '');
+    setFlagDialogDamageId(id);
   };
+  const closeFlagDialog = () => {
+    setFlagDialogDamageId(null);
+    setFlagDraftText('');
+  };
+  const saveFlagFromDialog = () => {
+    if (flagDialogDamageId == null) return;
+    const trimmed = flagDraftText.trim();
+    setDamages(damages.map(d =>
+      d.id === flagDialogDamageId
+        ? { ...d, flagged: true, flagComment: trimmed ? trimmed : undefined }
+        : d,
+    ));
+    closeFlagDialog();
+  };
+  const removeFlagFromDialog = () => {
+    if (flagDialogDamageId == null) return;
+    setDamages(damages.map(d =>
+      d.id === flagDialogDamageId
+        ? { ...d, flagged: false, flagComment: undefined }
+        : d,
+    ));
+    closeFlagDialog();
+  };
+  /** Compatibility name — existing call sites still use `toggleFlag`; they now open the dialog. */
+  const toggleFlag = (id: number) => openFlagDialog(id);
 
   // When the visible frame changes, select the first detection for that frame so Approve/Reject match the image.
   useEffect(() => {
@@ -814,6 +894,7 @@ export default function AssistedInspectionV3({
     return (
       <InspectionSummary
         vehicleLabel={vehicleLabel || 'Vehicle'}
+        vehicleIdentity={summaryVehicleIdentity}
         damages={damages}
         payload={payload}
         onBack={() => setShowSummary(false)}
@@ -1093,8 +1174,21 @@ export default function AssistedInspectionV3({
           additionalDamageTypes={inspectorDamageTypesFromPayload}
           onCapture={(capturePayload) => {
             const ts = new Date();
-            setCapturedPhotos((prev) => [...prev, { ...capturePayload, timestamp: ts }]);
-            const hasPhoto = Boolean(capturePayload.dataUrl?.trim());
+            const urls = capturePayload.dataUrls.map((u) => u.trim()).filter(Boolean);
+            const hasPhoto = urls.length > 0;
+            const captureId = capturePayload.captureId;
+            if (urls.length > 0) {
+              setCapturedPhotos((prev) => [
+                ...prev,
+                ...urls.map((dataUrl) => ({
+                  partName: capturePayload.partName,
+                  damageType: capturePayload.damageType,
+                  timestamp: ts,
+                  dataUrl,
+                  captureId,
+                })),
+              ]);
+            }
             setDamages((prev) => [
               ...prev,
               {
@@ -1108,8 +1202,13 @@ export default function AssistedInspectionV3({
                 frameId: hasPhoto ? '__manual_capture__' : '__manual_no_photo__',
                 confirmed: true,
                 damageName: capturePayload.damageType,
-                captureId: capturePayload.captureId,
-                ...(hasPhoto ? { captureDataUrl: capturePayload.dataUrl } : {}),
+                captureId,
+                ...(hasPhoto
+                  ? {
+                      captureDataUrl: urls[0],
+                      ...(urls.length > 1 ? { captureDataUrls: urls } : {}),
+                    }
+                  : {}),
               },
             ]);
             setShowCameraCapture(false);
@@ -1126,6 +1225,84 @@ export default function AssistedInspectionV3({
         vehicleLabel={vehicleLabel}
         timing={damageReportTiming}
       />
+
+      {/* Flag comment dialog — opens whenever the Flag action is invoked. Lets the inspector
+          record *why* they're flagging this damage (QA / billing / re-check note). Saving
+          flags + stores the comment; Remove clears both flag and comment. Comment is also
+          written into the CSV/PDF Notes column and surfaced in the Summary view. */}
+      <Dialog
+        open={flagDialogDamageId !== null}
+        onOpenChange={(next) => { if (!next) closeFlagDialog(); }}
+      >
+        <DialogContent className="sm:max-w-md">
+          {(() => {
+            const dmg = flagDialogDamageId != null ? damages.find(d => d.id === flagDialogDamageId) : null;
+            const wasFlagged = !!dmg?.flagged;
+            const label = dmg ? (damageLabelForExport(dmg) || dmg.type || 'detection') : 'detection';
+            return (
+              <>
+                <DialogHeader>
+                  <DialogTitle className="flex items-center gap-2">
+                    <Flag size={16} className="text-amber-600" aria-hidden />
+                    {wasFlagged ? 'Edit flag note' : 'Flag for follow-up'}
+                  </DialogTitle>
+                  <DialogDescription>
+                    Add a note for QA / billing / re-check on <span className="font-medium text-foreground">{dmg?.part || 'this part'}</span>
+                    {' · '}<span className="text-foreground">{label}</span>. Saved to the CSV & PDF notes column.
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="flex flex-col gap-2">
+                  <label htmlFor="flag-note" className="text-xs font-medium text-muted-foreground">
+                    Reason / note
+                  </label>
+                  <textarea
+                    id="flag-note"
+                    autoFocus
+                    value={flagDraftText}
+                    onChange={(e) => setFlagDraftText(e.target.value)}
+                    placeholder="e.g. Pre-existing per delivery photos — confirm with sales before billing"
+                    rows={4}
+                    maxLength={500}
+                    className="w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                    onKeyDown={(e) => {
+                      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                        e.preventDefault();
+                        saveFlagFromDialog();
+                      }
+                    }}
+                  />
+                  <p className="text-[11px] text-muted-foreground text-right tabular-nums">
+                    {flagDraftText.length}/500
+                  </p>
+                </div>
+                <DialogFooter className="gap-2 sm:gap-2">
+                  {wasFlagged && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                      onClick={removeFlagFromDialog}
+                    >
+                      Remove flag
+                    </Button>
+                  )}
+                  <Button type="button" variant="outline" onClick={closeFlagDialog}>
+                    Cancel
+                  </Button>
+                  <Button
+                    type="button"
+                    className="bg-amber-500 text-amber-950 hover:bg-amber-600"
+                    onClick={saveFlagFromDialog}
+                  >
+                    <Flag size={14} className="mr-1.5" aria-hidden />
+                    {wasFlagged ? 'Save note' : 'Flag & save note'}
+                  </Button>
+                </DialogFooter>
+              </>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={inspectionCompleteOpen} onOpenChange={setInspectionCompleteOpen}>
         <DialogContent className="sm:max-w-md">
@@ -1172,7 +1349,7 @@ export default function AssistedInspectionV3({
               ) : (
                 <>
                   <span className="block text-foreground">
-                    You used Approve or Reject on the <strong>last walk-around image</strong> for the last panel in
+                    You used Approve or Reject on the <strong>last image</strong> for the last panel in
                     order, but review is not finished yet.
                   </span>
                   <span className="block text-destructive font-medium">
@@ -1182,8 +1359,8 @@ export default function AssistedInspectionV3({
                       : 'detections still need approve or reject.'}
                   </span>
                   <span className="block text-muted-foreground text-sm">
-                    Use the vehicle map or parts list to open panels with pending rows, and use frame dots or Previous
-                    if you skipped camera angles on any panel.
+                    Use the vehicle map or parts list to open panels with pending rows, and use the Previous/Next
+                    controls or the dot strip if you skipped a view on any panel.
                   </span>
                 </>
               )}
@@ -1327,14 +1504,9 @@ export default function AssistedInspectionV3({
             <CheckCircle size={14} className="shrink-0" aria-hidden />
             {inspectionRecord?.status === 'completed' ? 'Completed' : 'Mark complete'}
           </Button>
-          <button
-            type="button"
-            onClick={() => setShowCameraCapture(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors border border-border"
-            title="Capture missed damage — add a photo, then choose car part and damage type"
-          >
-            <Camera size={14} /> Missed damage
-          </button>
+          {/* "Missed damage" lives in the per-damage action row now (Approve/Reject/Duplicate/Missed/Flag)
+              so it's one hop from the review cluster. Kept out of this global toolbar to avoid
+              duplicate entry points. */}
           <button
             type="button"
             onClick={() => setShowSummary(true)}
@@ -1390,44 +1562,47 @@ export default function AssistedInspectionV3({
       </div>
 
       {/* Mobile header — stacked rows, icon actions */}
-      <div className="flex md:hidden flex-col gap-2 px-3 py-2.5 bg-card border-b border-border shrink-0">
-        <div className="flex items-center gap-2 min-w-0">
-          {damages.length > 0 && (
-            <div
-              className="flex items-center gap-1 rounded-lg border border-border bg-destructive/10 px-2 py-1 text-destructive shrink-0"
-              title="Total detections"
-            >
-              <AlertTriangle size={14} aria-hidden />
-              <span className="text-xs font-bold tabular-nums">{damages.length}</span>
-            </div>
-          )}
+      <div className="flex md:hidden flex-col gap-2 px-3 pt-[max(0.625rem,env(safe-area-inset-top))] pb-2.5 bg-card border-b border-border shrink-0">
+        {/* Row 1 — identification: back + full-width vehicle title + primary map CTA. The title
+            gets the whole row (minus back chevron and map button) so it can actually be read,
+            wrapping to 2 lines if needed instead of collapsing to "2023…". Secondary action
+            buttons have been moved to row 2 so this row stays legible on 360px screens. */}
+        <div className="flex items-start gap-2 min-w-0">
           {onBack && (
             <button
               type="button"
               onClick={onBack}
-              className="p-1.5 rounded-lg text-muted-foreground hover:bg-accent shrink-0"
+              className="p-1.5 -ml-1 rounded-lg text-muted-foreground hover:bg-accent shrink-0"
               title="Back"
+              aria-label="Back"
             >
-              <ChevronLeft size={20} />
+              <ChevronLeft size={22} />
             </button>
           )}
-          <img
-            src="/favicon.png"
-            alt=""
-            width={48}
-            height={48}
-            className="h-11 w-11 shrink-0 rounded-lg object-contain bg-muted ring-1 ring-border"
-          />
-          <div className="min-w-0 flex-1 flex flex-col gap-0.5 py-0.5">
-            <h1 className="font-bold text-sm leading-tight truncate">{vehicleLabel || 'AutoInspect'}</h1>
+          <div className="min-w-0 flex-1 flex flex-col gap-0.5 pt-0.5">
+            <div className="flex items-start gap-2 min-w-0">
+              <h1
+                className="font-bold text-[15px] leading-tight text-foreground min-w-0 flex-1 break-words line-clamp-2"
+                title={vehicleLabel || 'AutoInspect'}
+              >
+                {vehicleLabel || 'AutoInspect'}
+              </h1>
+              {damages.length > 0 && (
+                <span
+                  className="flex items-center gap-1 rounded-md border border-destructive/30 bg-destructive/10 px-1.5 py-0.5 text-destructive shrink-0"
+                  title={`${damages.length} total detection${damages.length !== 1 ? 's' : ''}`}
+                >
+                  <AlertTriangle size={12} aria-hidden />
+                  <span className="text-[11px] font-bold tabular-nums leading-none">{damages.length}</span>
+                </span>
+              )}
+            </div>
             {(vehicleUniqueId || summaryPortalUrl) && (
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
+              <div className="flex items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground min-w-0">
                 {vehicleUniqueId ? (
-                  <span className="min-w-0 max-w-full font-mono leading-snug tracking-tight text-foreground/80">
-                    <span className="font-sans font-medium text-muted-foreground">uniqueId </span>
-                    <span className="break-all" title={vehicleUniqueId}>
-                      {vehicleUniqueId}
-                    </span>
+                  <span className="min-w-0 flex-1 font-mono leading-snug tracking-tight text-foreground/80 truncate">
+                    <span className="font-sans font-medium text-muted-foreground">ID </span>
+                    <span title={vehicleUniqueId}>{vehicleUniqueId}</span>
                   </span>
                 ) : null}
                 {summaryPortalUrl ? (
@@ -1438,7 +1613,7 @@ export default function AssistedInspectionV3({
                     className="inline-flex shrink-0 items-center gap-1 font-medium text-primary hover:underline"
                   >
                     <ExternalLink size={11} className="shrink-0" />
-                    UVeye inspection
+                    UVeye
                   </a>
                 ) : null}
               </div>
@@ -1446,73 +1621,72 @@ export default function AssistedInspectionV3({
           </div>
           <button
             type="button"
-            onClick={() => setShowCameraCapture(true)}
-            className="p-2 rounded-lg border border-border text-muted-foreground hover:bg-accent shrink-0"
-            title="Capture missed damage — photo, then part and damage type"
-          >
-            <Camera size={18} aria-hidden />
-            <span className="sr-only">Capture missed damage</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowSummary(true)}
-            className="p-2 rounded-lg border border-border text-muted-foreground hover:bg-accent shrink-0"
-            title="Summary & stats"
-          >
-            <FileText size={18} />
-          </button>
-          <button
-            type="button"
-            onClick={() => setDamageReportPreviewOpen(true)}
-            className="p-2 rounded-lg border border-border text-muted-foreground hover:bg-accent shrink-0"
-            title="Preview damage report table, then download CSV"
-          >
-            <Table2 size={18} />
-          </button>
-          <button
-            type="button"
             onClick={() => setSidebarOpen(true)}
             className="p-2 rounded-lg border border-primary/30 bg-primary/10 text-primary hover:bg-primary/15 shrink-0"
             title="Vehicle map & parts"
+            aria-label="Vehicle map & parts"
           >
             <LayoutGrid size={18} />
           </button>
         </div>
-        <div className="flex flex-wrap items-center justify-end gap-2 text-[11px] text-muted-foreground">
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
-            <div
-              className={cn(
-                'inline-flex items-center gap-1 rounded-md border px-2 py-0.5 tabular-nums text-[11px] font-medium text-foreground',
-                inspectionRecord?.timerStartedAt && inspectionRecord?.status !== 'completed'
-                  ? 'border-amber-500/50 bg-amber-500/10'
-                  : 'border-border bg-muted/40',
-              )}
-            >
-              <Timer size={12} aria-hidden />
-              {!inspectionRecord?.timerStartedAt
-                ? '—'
-                : formatDurationSeconds(
-                    inspectionRecord.status === 'completed' &&
-                      typeof inspectionRecord.durationSeconds === 'number'
-                      ? inspectionRecord.durationSeconds
-                      : (elapsedLiveSeconds ?? 0),
-                  )}
-              {inspectionRecord?.timerStartedAt && inspectionRecord.status !== 'completed' ? (
-                <span className="text-[9px] font-normal opacity-80">live</span>
-              ) : null}
-            </div>
-            <Button
-              type="button"
-              size="sm"
-              variant="secondary"
-              className="h-7 px-2 text-[11px] gap-1"
-              disabled={!allDetectionsReviewed || inspectionRecord?.status === 'completed' || !onMarkInspectionComplete}
-              onClick={() => onMarkInspectionComplete?.()}
-            >
-              <CheckCircle size={12} aria-hidden />
-              {inspectionRecord?.status === 'completed' ? 'Done' : 'Complete'}
-            </Button>
+        {/* Row 2 — status + secondary actions. Timer + Complete live on the left (status the
+            inspector glances at); Camera / Summary / Report preview are secondary and sit on
+            the right as icon buttons. This used to share row 1 which squeezed the title. */}
+        <div className="flex items-center gap-2 min-w-0">
+          <div
+            className={cn(
+              'inline-flex items-center gap-1 rounded-md border px-2 py-1 tabular-nums text-[11px] font-medium text-foreground shrink-0',
+              inspectionRecord?.timerStartedAt && inspectionRecord?.status !== 'completed'
+                ? 'border-amber-500/50 bg-amber-500/10'
+                : 'border-border bg-muted/40',
+            )}
+          >
+            <Timer size={12} aria-hidden />
+            {!inspectionRecord?.timerStartedAt
+              ? '—'
+              : formatDurationSeconds(
+                  inspectionRecord.status === 'completed' &&
+                    typeof inspectionRecord.durationSeconds === 'number'
+                    ? inspectionRecord.durationSeconds
+                    : (elapsedLiveSeconds ?? 0),
+                )}
+            {inspectionRecord?.timerStartedAt && inspectionRecord.status !== 'completed' ? (
+              <span className="text-[9px] font-normal opacity-80">live</span>
+            ) : null}
           </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            className="h-7 px-2 text-[11px] gap-1 shrink-0"
+            disabled={!allDetectionsReviewed || inspectionRecord?.status === 'completed' || !onMarkInspectionComplete}
+            onClick={() => onMarkInspectionComplete?.()}
+          >
+            <CheckCircle size={12} aria-hidden />
+            {inspectionRecord?.status === 'completed' ? 'Done' : 'Complete'}
+          </Button>
+          <div className="flex-1" />
+          {/* Camera / "Missed damage" capture button moved into the per-damage action row
+              (Approve/Reject/Duplicate/Missed/Flag) — kept out of this header to avoid two
+              entry points for the same action. */}
+          <button
+            type="button"
+            onClick={() => setShowSummary(true)}
+            className="p-1.5 rounded-lg border border-border text-muted-foreground hover:bg-accent shrink-0"
+            title="Summary & stats"
+            aria-label="Summary & stats"
+          >
+            <FileText size={16} />
+          </button>
+          <button
+            type="button"
+            onClick={() => setDamageReportPreviewOpen(true)}
+            className="p-1.5 rounded-lg border border-border text-muted-foreground hover:bg-accent shrink-0"
+            title="Preview damage report table, then download CSV"
+            aria-label="Preview damage report table"
+          >
+            <Table2 size={16} />
+          </button>
         </div>
         {/* Orientation: lives in the EXISTING mobile header (no new row beyond what was already here for parts count). Never overlays the image. */}
         <InspectionOrientation.MobileCompact
@@ -1544,9 +1718,9 @@ export default function AssistedInspectionV3({
         <div className="flex shrink-0 flex-col gap-2 border-b border-border bg-primary/5 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-muted-foreground">
             <span className="font-semibold text-foreground">Start inspection</span> — {damages.length}{' '}
-            detection{damages.length !== 1 ? 's' : ''} across {partsWithDamage.length} part
-            {partsWithDamage.length !== 1 ? 's' : ''}. Jumps to the first part in walk order with the matching
-            frame.
+            detection{damages.length !== 1 ? 's' : ''} across             {partsWithDamage.length} part
+            {partsWithDamage.length !== 1 ? 's' : ''}. Jumps to the first part in walk order with the
+            corresponding view.
           </p>
           <Button type="button" onClick={handleStartInspection} className="shrink-0 gap-2" size="sm">
             <Play size={16} className="shrink-0" aria-hidden />
@@ -1581,9 +1755,11 @@ export default function AssistedInspectionV3({
                             const d = partDamages[Math.min(selectedDamageIdx, partDamages.length - 1)];
                             return d ? damageLabelForExport(d) || d.type || 'Detection' : '';
                           })()
-                        : currentFrame
-                          ? `${currentFrame.camera} · f${currentFrame.frameNum}`
-                          : 'No image'}
+                        : partFrames.length === 0
+                          ? 'No image'
+                          : partFrames.length === 1
+                            ? '1 view'
+                            : `View ${currentFrameIdx + 1}/${partFrames.length}`}
                     </p>
                   </div>
                   {partDamages.length > 0 &&
@@ -1591,6 +1767,11 @@ export default function AssistedInspectionV3({
                       const clampedIdx = Math.min(selectedDamageIdx, partDamages.length - 1);
                       const dmg = partDamages[clampedIdx];
                       if (!dmg) return null;
+                      // Mobile compact action cluster (shown while image is focused).
+                      // Color-coded solid backgrounds mirror the expanded damage strip so
+                      // the visual vocabulary stays consistent: green=approve, red=reject,
+                      // blue=duplicate, orange=missed-damage. Flag stays subdued (QA-only
+                      // follow-up, low frequency) and only tints amber when active.
                       return (
                         <div className="flex shrink-0 items-center gap-0.5">
                           <button
@@ -1613,9 +1794,18 @@ export default function AssistedInspectionV3({
                             type="button"
                             title="Duplicate"
                             onClick={() => toggleDuplicate(dmg.id)}
-                            className={`rounded-md p-1.5 ${dmg.isDuplicate ? 'text-blue-600' : 'text-muted-foreground hover:bg-muted'}`}
+                            className={`rounded-md p-1.5 ${dmg.isDuplicate ? 'bg-blue-700 text-white' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
                           >
                             <Copy size={16} />
+                          </button>
+                          <button
+                            type="button"
+                            title="Capture missed damage"
+                            aria-label="Capture missed damage"
+                            onClick={() => setShowCameraCapture(true)}
+                            className="rounded-md p-1.5 bg-orange-500 text-white hover:bg-orange-600"
+                          >
+                            <Camera size={16} />
                           </button>
                           <button
                             type="button"
@@ -1638,9 +1828,14 @@ export default function AssistedInspectionV3({
                 </div>
               )}
 
-              {/* Part header bar + damage strip (full — desktop always; mobile when expanded) */}
+              {/* Part header bar + damage strip (full — desktop always; mobile when expanded).
+                  On desktop the part-header and damage-review strip merge into a single row —
+                  part name / meta live on the left of the damage strip, Close moves to the
+                  far right, so we only render this standalone header bar on mobile, OR on
+                  desktop when there are no damages (nothing to merge it with). */}
               {(partDetailExpanded || !isMobile) && (
               <>
+              {(isMobile || partDamages.length === 0) && (
               <div className="flex items-center justify-between gap-2 px-3 py-2 sm:px-4 bg-card/80 backdrop-blur border-b border-border shrink-0">
                 <div className="flex min-w-0 flex-1 items-start gap-2">
                   <button
@@ -1654,11 +1849,17 @@ export default function AssistedInspectionV3({
                   </button>
                   <div className="min-w-0">
                     <h2 className="text-base font-bold text-foreground sm:text-lg">{activePart.name}</h2>
+                    {/* Counts only — the per-damage nav counter (next to the arrows) already
+                        tells you which detection you're viewing, so don't repeat "view X/Y". */}
                     <p className="hidden text-xs text-muted-foreground md:block">
-                      {currentFrame ? `${currentFrame.camera} • Frame ${currentFrame.frameNum}` : 'No images'} • {partFrames.length} image{partFrames.length !== 1 ? 's' : ''} • {partDamages.length} detection{partDamages.length !== 1 ? 's' : ''}
+                      {partFrames.length === 0
+                        ? 'No images'
+                        : `${partFrames.length} image${partFrames.length !== 1 ? 's' : ''} · ${partDamages.length} detection${partDamages.length !== 1 ? 's' : ''}`}
                     </p>
                     <p className="text-[11px] text-muted-foreground md:hidden truncate">
-                      {currentFrame ? `${currentFrame.camera} · f${currentFrame.frameNum}` : 'No images'} · {partFrames.length} img · {partDamages.length} det
+                      {partFrames.length === 0
+                        ? 'No images'
+                        : `${partFrames.length} img · ${partDamages.length} det`}
                     </p>
                   </div>
                 </div>
@@ -1672,6 +1873,7 @@ export default function AssistedInspectionV3({
                   </button>
                 </div>
               </div>
+              )}
 
               {/* Damage review strip — navigation, approve/reject (per detection + frameId), duplicate/flag */}
               {partDamages.length > 0 && (() => {
@@ -1681,6 +1883,22 @@ export default function AssistedInspectionV3({
                 const dmgFrame = allFrames.find(f => f.id === dmg.frameId);
                 return (
                   <div className="flex w-full min-w-0 max-h-[40vh] touch-pan-y flex-wrap items-center gap-2 overflow-y-auto overscroll-contain border-b border-border bg-card px-3 py-2 shrink-0 max-md:flex-nowrap max-md:overflow-x-auto max-md:overflow-y-visible max-md:overscroll-x-contain max-md:[-webkit-overflow-scrolling:touch] max-md:touch-pan-x md:max-h-none md:gap-3 md:px-4">
+                    {/* Desktop-only part identity block — merged here from the old separate
+                        part-header row so the whole part+damage pane reads as a single bar.
+                        Kept `md:flex` so mobile still uses its standalone header above.
+                        Meta shows total image + detection counts only; the current position
+                        ("1/6") is already rendered by the nav counter in the next column —
+                        don't repeat it here. */}
+                    <div className="hidden md:flex shrink-0 min-w-0 max-w-[22rem] flex-col pr-3 mr-1 border-r border-border">
+                      <h2 className="text-base font-bold text-foreground lg:text-lg truncate" title={activePart.name}>
+                        {activePart.name}
+                      </h2>
+                      <p className="text-xs text-muted-foreground truncate">
+                        {partFrames.length === 0
+                          ? 'No images'
+                          : `${partFrames.length} image${partFrames.length !== 1 ? 's' : ''} · ${partDamages.length} detection${partDamages.length !== 1 ? 's' : ''}`}
+                      </p>
+                    </div>
                     {/* Navigation between damages */}
                     <div className="flex items-center gap-1.5 shrink-0">
                       <button
@@ -1748,21 +1966,21 @@ export default function AssistedInspectionV3({
                                   href={atlasViewerUrl}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  title="Open this camera and frame in the UVeye web app (Atlas)"
+                                  title="Open in the UVeye web app (Atlas)"
                                   className="inline-flex items-center gap-1.5 text-[10px] font-semibold text-primary hover:underline"
                                 >
                                   <ExternalLink size={12} />
-                                  {dmgFrame.camera} • Frame {dmgFrame.frameNum}
+                                  Open in UVeye (Atlas)
                                 </a>
                               );
                             }
                             return (
                               <span
                                 className="text-[10px] text-muted-foreground"
-                                title="Cannot build Atlas link — missing org, site, inspection id, or camera in the payload."
+                                title="Link unavailable — open the inspection in UVeye from the header or summary."
                               >
                                 <LinkIcon size={10} className="inline mr-0.5" />
-                                {dmgFrame.camera} • Frame {dmgFrame.frameNum}
+                                Open in UVeye
                               </span>
                             );
                           })()}
@@ -1808,7 +2026,7 @@ export default function AssistedInspectionV3({
                     <div className="flex flex-wrap items-center gap-1.5 shrink-0 justify-end">
                       <button
                         type="button"
-                        title="Approve this detection for this frame (counts in header & summary), then go to next image"
+                        title="Approve this finding (counts in header & summary), then go to next"
                         onClick={() => handleConfirmAndAdvance(dmg.id, true)}
                         className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold border-2 transition-all shadow-sm ${dmg.confirmed === true ? 'bg-green-700 border-green-600 text-white ring-2 ring-green-400/40' : 'bg-green-600 border-green-600 text-white hover:bg-green-700'}`}
                       >
@@ -1816,27 +2034,60 @@ export default function AssistedInspectionV3({
                       </button>
                       <button
                         type="button"
-                        title="Reject this detection for this frame (counts in header & summary), then go to next image"
+                        title="Reject this finding (counts in header & summary), then go to next"
                         onClick={() => handleConfirmAndAdvance(dmg.id, false)}
                         className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold border-2 transition-all shadow-sm ${dmg.confirmed === false ? 'bg-red-700 border-red-600 text-white ring-2 ring-red-400/40' : 'bg-red-600 border-red-600 text-white hover:bg-red-700'}`}
                       >
                         <XCircle size={14} /> Reject
                       </button>
+                      {/* Duplicate uses a solid blue background (matches the mobile compact
+                          cluster's color vocabulary: Approve=green / Reject=red / Duplicate=blue /
+                          Missed=orange). Active state is distinguished by a darker shade +
+                          ring, same pattern Approve/Reject use. */}
                       <button
                         type="button"
                         title="Mark as duplicate view of the same real-world damage (another angle)"
                         onClick={() => toggleDuplicate(dmg.id)}
-                        className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold border-2 transition-all ${dmg.isDuplicate ? 'bg-blue-600 border-blue-600 text-white shadow-sm' : 'border-blue-500 text-blue-700 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-950/40'}`}
+                        className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold border-2 transition-all shadow-sm ${dmg.isDuplicate ? 'bg-blue-700 border-blue-700 text-white ring-2 ring-blue-400/40' : 'bg-blue-600 border-blue-600 text-white hover:bg-blue-700'}`}
                       >
                         <Copy size={14} /> Duplicate
                       </button>
+                      {/* "Missed damage" sits with Approve/Reject/Duplicate because it's the
+                          logical next action when none of those fit ("the system didn't catch
+                          this one"). Moved here from the global header toolbars so it's one
+                          thumb-move away from the review cluster. Orange solid background so
+                          it reads as a distinct alert/create action in the colored cluster
+                          (green approve / red reject / blue duplicate / orange missed). */}
+                      <button
+                        type="button"
+                        onClick={() => setShowCameraCapture(true)}
+                        title="Capture missed damage — add a photo, then choose car part and damage type"
+                        className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold border-2 border-orange-500 bg-orange-500 text-white shadow-sm transition-all hover:bg-orange-600 hover:border-orange-600"
+                      >
+                        <Camera size={14} /> Missed
+                      </button>
+                      {/* Flag is a lower-frequency action (QA follow-up), so render icon-only
+                          with a subtle active state. Tooltip / aria-label still carry the full
+                          meaning; this keeps the primary cluster from overflowing. */}
                       <button
                         type="button"
                         title="Flag for internal follow-up (QA, billing, re-check). Does not approve or reject the finding."
+                        aria-label={dmg.flagged ? 'Unflag for follow-up' : 'Flag for follow-up'}
+                        aria-pressed={dmg.flagged}
                         onClick={() => toggleFlag(dmg.id)}
-                        className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-all ${dmg.flagged ? 'bg-amber-500/20 border-amber-500/50 text-amber-900 dark:text-amber-100' : 'border-border text-muted-foreground hover:bg-muted/60'}`}
+                        className={`flex items-center justify-center w-9 h-9 rounded-lg border transition-all ${dmg.flagged ? 'bg-amber-500/20 border-amber-500/50 text-amber-900 dark:text-amber-100' : 'border-border text-muted-foreground hover:bg-muted/60'}`}
                       >
-                        <Flag size={12} /> Flag
+                        <Flag size={14} />
+                      </button>
+                      {/* Desktop-only Close — mobile still gets it via the separate part header
+                          bar above. Placed after the action cluster so "dismiss the pane" stays
+                          at the far right edge of the merged bar. */}
+                      <button
+                        type="button"
+                        onClick={() => setActivePart(null)}
+                        className="hidden md:inline-flex items-center rounded-lg px-2 py-1.5 ml-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+                      >
+                        Close
                       </button>
                     </div>
                   </div>
@@ -1853,7 +2104,7 @@ export default function AssistedInspectionV3({
                   {currentFrame && viewportImageSrc ? (
                     <InspectionViewportImage
                       src={viewportImageSrc}
-                      alt={`${currentFrame.camera} frame ${currentFrame.frameNum}`}
+                      alt="Inspection image"
                       zoom={viewportZoom}
                       onZoomChange={setViewportZoom}
                       brightness={viewportBrightness}
@@ -1863,7 +2114,7 @@ export default function AssistedInspectionV3({
                     <div className="flex flex-1 flex-col items-center justify-center gap-3 text-muted-foreground/60 py-12 min-h-0">
                       <ImageIcon size={48} strokeWidth={1} />
                       <p className="text-sm font-medium">No image available</p>
-                      <p className="text-xs">No camera captures for this part yet</p>
+                      <p className="text-xs">No images for this part yet</p>
                     </div>
                   )}
                 </div>
@@ -2034,7 +2285,7 @@ export default function AssistedInspectionV3({
                 )}
                 {photoReviewFocus && (
                   <div className="pointer-events-none absolute bottom-14 left-1/2 -translate-x-1/2 z-10 text-[10px] text-background/90 bg-foreground/45 px-2 py-0.5 rounded-full max-w-[92%] text-center">
-                    Tap the photo again for zoom, frame dots, and navigation
+                    Tap the photo again for zoom, the dot strip, and navigation
                   </div>
                 )}
                 {/* The desktop scroll/pinch help overlay was removed — those controls are intuitive
@@ -2066,11 +2317,8 @@ export default function AssistedInspectionV3({
                 <div className="absolute bottom-3 left-1/2 z-10 flex max-w-[90%] -translate-x-1/2 touch-pan-x items-center gap-1 overflow-x-auto overscroll-x-contain rounded-full bg-foreground/30 px-3 py-2 backdrop-blur-md [-webkit-overflow-scrolling:touch]">
                   {partFrames.map((frame, idx) => {
                     const hasDamage = partDamages.some(d => d.frameId === frame.id);
-                    const prevCam = idx > 0 ? partFrames[idx - 1].camera : null;
-                    const showDivider = prevCam && prevCam !== frame.camera;
                     return (
                       <React.Fragment key={frame.id}>
-                        {showDivider && <div className="w-px h-3 bg-background/30 mx-0.5 shrink-0" />}
                         <button
                           type="button"
                           onClick={() => setCurrentFrameIdx(idx)}
@@ -2085,11 +2333,6 @@ export default function AssistedInspectionV3({
                 </div>
                 )}
 
-                {currentFrame && !photoReviewFocus && (
-                  <div className="absolute top-3 left-3 bg-foreground/40 backdrop-blur-md text-background text-xs px-3 py-1.5 rounded-lg font-mono z-10">
-                    {currentFrame.camera} • f{currentFrame.frameNum}
-                  </div>
-                )}
               </div>
             </>
           ) : (
