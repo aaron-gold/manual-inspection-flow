@@ -18,6 +18,7 @@ import {
 const WALK_STATE_CURRENT_FILL = '#3B82F6'; // blue-500 — light fill on the current part
 const WALK_STATE_CURRENT_STROKE = '#1D4ED8'; // blue-700 — outline on top of the fill
 const WALK_STATE_NEXT_STROKE = '#2563EB'; // blue-600 — dashed outline on the next part
+const DAMAGE_HIGHLIGHT_STROKE = '#6B7280'; // gray-500 — quiet outline on damaged panels (clarifies edges without competing with the red fill)
 
 type SedanUnifiedDiagramProps = {
   damages: Damage[];
@@ -143,13 +144,19 @@ export function SedanUnifiedDiagram({
           el.setAttribute('fill', fill);
         }
 
-        // Current-part outline is applied regardless of damage OR shape — a damaged+current
-        // panel stays red but picks up a blue stroke so the inspector still sees "you are
-        // here". On a circle this manifests as a blue ring around the wheel.
+        // Stroke priority (highest first):
+        //   1. Current part wins over everything (blue, thick) so "you are here" reads even on
+        //      a damaged+current panel.
+        //   2. Damaged but not current → quiet gray outline so the red fill has a defined edge
+        //      against the raster background and damaged panels are easier to count by eye.
+        //   3. Next part (only when not damaged) → dashed blue outline, secondary cue.
         if (isCurrent) {
           el.setAttribute('stroke', WALK_STATE_CURRENT_STROKE);
           el.setAttribute('stroke-width', '2.5');
-        } else if (!hasDamage && isNext) {
+        } else if (hasDamage) {
+          el.setAttribute('stroke', DAMAGE_HIGHLIGHT_STROKE);
+          el.setAttribute('stroke-width', '1');
+        } else if (isNext) {
           // Next part: dashed outline only. Works on both paths (panels) and circles (tire
           // walls — dashed ring at the wheel position).
           el.setAttribute('stroke', WALK_STATE_NEXT_STROKE);
