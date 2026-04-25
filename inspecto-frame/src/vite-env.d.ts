@@ -9,6 +9,12 @@ interface ImportMetaEnv {
   readonly VITE_UVEYE_FORCE_PROXY?: string;
   /** Query param name for image URL auth when not using proxy (`key` vs `uveye-api-key`). */
   readonly VITE_UVEYE_IMAGE_KEY_QUERY?: string;
+  /** Semver from package.json, injected at build/dev server start. */
+  readonly VITE_APP_VERSION: string;
+  /** Short git SHA (or CI commit), injected at build/dev server start. */
+  readonly VITE_APP_GIT_SHA: string;
+  /** `"1"` when the local tree had uncommitted changes at bundle time (dev only). */
+  readonly VITE_APP_GIT_DIRTY: string;
 }
 
 interface ImportMeta {

@@ -122,6 +122,23 @@ export async function fetchUveyeImageBlobUrl(url: string): Promise<string> {
   return blobUrl;
 }
 
+/**
+ * Drop every entry in the in-memory blob URL cache. The hard-reset flow calls this so the
+ * next image render goes through a real fetch instead of being served from the previous
+ * session's cached blob — the user's "first first first time" experience after reset.
+ * Each blob URL is revoked first so the browser releases the underlying memory.
+ */
+export function revokeAllCachedImageBlobUrls(): void {
+  for (const blobUrl of imageBlobUrlCache.values()) {
+    try {
+      URL.revokeObjectURL(blobUrl);
+    } catch {
+      /* ignore — revoke is best-effort */
+    }
+  }
+  imageBlobUrlCache.clear();
+}
+
 /** Warm the cache for nearby frames (non-blocking). */
 export function prefetchUveyeImages(urls: (string | undefined)[]): void {
   for (const u of urls) {

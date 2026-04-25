@@ -89,3 +89,31 @@ export async function savePersistedBundle(bundle: PersistedBundle): Promise<void
 export async function clearPersistedBundle(): Promise<void> {
   await store.removeItem(BUNDLE_KEY);
 }
+
+/**
+ * Nuclear reset: wipes every key in our IndexedDB store AND deletes the underlying database.
+ * Use this when the inspector wants the browser to forget everything (so re-pulling the same
+ * inspection feels like the very first time). The caller is responsible for revoking any
+ * in-memory blob-URL caches and reloading the page so module-level state also restarts.
+ *
+ * Why both `store.clear()` and `deleteDatabase()`? `store.clear()` removes all keys (including
+ * any leftover keys from older app versions that don't match `BUNDLE_KEY`); deleting the DB
+ * itself ensures the on-disk file is unlinked so the next save starts from a fresh schema.
+ */
+export async function hardResetLocalStorage(): Promise<void> {
+  // Best-effort store.clear so any leftover legacy keys go away even if deleteDatabase fails.
+  try {
+    await store.clear();
+  } catch {
+    /* fall through to deleteDatabase below */
+  }
+  await new Promise<void>((resolve, reject) => {
+    if (typeof indexedDB === 'undefined') return resolve();
+    const req = indexedDB.deleteDatabase('inspecto-frame');
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error ?? new Error('deleteDatabase failed'));
+    // Other open connections (e.g. another tab) will block deletion. We resolve anyway and let
+    // the page reload close them — perfect cleanup happens on next launch.
+    req.onblocked = () => resolve();
+  });
+}

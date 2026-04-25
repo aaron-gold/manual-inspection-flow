@@ -70,6 +70,12 @@ interface Props {
   exportError?: string | null;
   /** Opens a confirmation flow (parent) to erase all locally stored inspections and related data. */
   onRequestClearLocalData?: () => void;
+  /**
+   * Opens a separate confirmation flow that wipes the IndexedDB database itself plus the
+   * in-memory image cache and reloads the page. Use when the soft "Clear local data" isn't
+   * enough — e.g. troubleshooting or starting completely fresh.
+   */
+  onRequestHardReset?: () => void;
 }
 
 export default function InspectionDashboard({
@@ -86,6 +92,7 @@ export default function InspectionDashboard({
   retrieveError = null,
   exportError = null,
   onRequestClearLocalData,
+  onRequestHardReset,
 }: Props) {
   const [inspectionId, setInspectionId] = useState('');
   const [mainTab, setMainTab] = useState<'inspections' | 'analytics'>('inspections');
@@ -209,6 +216,17 @@ export default function InspectionDashboard({
               >
                 <Trash2 size={16} />
                 Clear local data…
+              </button>
+            )}
+            {onRequestHardReset && (
+              <button
+                type="button"
+                onClick={onRequestHardReset}
+                title="Wipe IndexedDB + cached images and reload — every next inspection pull will be fresh"
+                className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-destructive bg-destructive/5 text-destructive text-sm font-semibold hover:bg-destructive/15 transition-colors w-full sm:w-auto"
+              >
+                <Trash2 size={16} />
+                Hard reset…
               </button>
             )}
           </div>

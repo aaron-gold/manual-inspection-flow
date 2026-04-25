@@ -14,12 +14,14 @@ import InspectionDashboard, { type InspectionRecord } from "@/components/Inspect
 import {
   fetchUveyeInspection,
   buildInspectionRecordFromResponse,
+  revokeAllCachedImageBlobUrls,
   type UveyeInspectionResponse,
 } from "@/services/uveyeApi";
 import {
   loadPersistedBundle,
   savePersistedBundle,
   clearPersistedBundle,
+  hardResetLocalStorage,
   serializeRecord,
   deserializeRecord,
   toSerializedCaptures,
@@ -53,6 +55,9 @@ export default function Index() {
   const [dailyPreviewOpen, setDailyPreviewOpen] = useState(false);
   const [clearDataDialogOpen, setClearDataDialogOpen] = useState(false);
   const [isClearingLocalData, setIsClearingLocalData] = useState(false);
+  const [hardResetDialogOpen, setHardResetDialogOpen] = useState(false);
+  const [isHardResetting, setIsHardResetting] = useState(false);
+  const [hardResetError, setHardResetError] = useState<string | null>(null);
 
   const dailyPreview = useMemo(
     () =>
@@ -176,6 +181,36 @@ export default function Index() {
       setClearDataDialogOpen(false);
     } finally {
       setIsClearingLocalData(false);
+    }
+  }, []);
+
+  /**
+   * Hard reset: drop the in-memory image blob cache, wipe IndexedDB completely (including
+   * legacy keys + the database file), then full-page reload so every module-level cache
+   * (React state, Map / Set instances, useMemo results) restarts. After this, re-pulling the
+   * same inspection ID feels like the very first time.
+   */
+  const handleConfirmHardReset = useCallback(async () => {
+    setIsHardResetting(true);
+    setHardResetError(null);
+    try {
+      revokeAllCachedImageBlobUrls();
+      await hardResetLocalStorage();
+      // Disable autosave-on-unmount race: clear React state so the debounced save effect can't
+      // resurrect the bundle between the IDB wipe and the page reload.
+      setInspections([]);
+      setPayloads({});
+      setReviewStateById({});
+      setCapturesById({});
+      setInspectorName("");
+      // Brief delay so the state setters above flush before we reload — purely cosmetic; the
+      // reload itself is what brings us to a fully fresh module graph.
+      window.setTimeout(() => {
+        window.location.reload();
+      }, 50);
+    } catch (e) {
+      setHardResetError(e instanceof Error ? e.message : "Hard reset failed");
+      setIsHardResetting(false);
     }
   }, []);
 
@@ -310,6 +345,10 @@ export default function Index() {
             retrieveError={retrieveError}
             exportError={exportError}
             onRequestClearLocalData={() => setClearDataDialogOpen(true)}
+            onRequestHardReset={() => {
+              setHardResetError(null);
+              setHardResetDialogOpen(true);
+            }}
           />
         )}
       </div>
@@ -337,6 +376,52 @@ export default function Index() {
               onClick={() => void handleConfirmClearLocalData()}
             >
               {isClearingLocalData ? "Clearing…" : "Yes, clear everything"}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/*
+        Hard reset dialog — separate from the soft "Clear local data" path so the inspector has
+        to consciously opt into the heavier action. Confirming wipes IndexedDB entirely + the
+        in-memory image cache, then reloads the page. After reload, re-pulling the same UVeye
+        inspection ID is treated as a brand-new fetch.
+      */}
+      <AlertDialog
+        open={hardResetDialogOpen}
+        onOpenChange={(open) => {
+          if (!isHardResetting) setHardResetDialogOpen(open);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Hard reset this device?</AlertDialogTitle>
+            <AlertDialogDescription className="text-left space-y-2">
+              <span className="block">
+                This wipes the entire local database and the cached scan images, then reloads
+                the page. Use it when something feels stuck or you want a truly clean start —
+                the next inspection you pull will be re-downloaded from scratch.
+              </span>
+              <span className="block font-medium text-foreground">
+                Everything saved on this device disappears. Download the full pack (CSV + photos)
+                first if you need a backup. This cannot be undone.
+              </span>
+              {hardResetError && (
+                <span className="block text-destructive text-sm" role="alert">
+                  {hardResetError}
+                </span>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isHardResetting}>Cancel</AlertDialogCancel>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={isHardResetting}
+              onClick={() => void handleConfirmHardReset()}
+            >
+              {isHardResetting ? "Resetting…" : "Yes, hard reset"}
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
