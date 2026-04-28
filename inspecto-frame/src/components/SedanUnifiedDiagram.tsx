@@ -1,5 +1,5 @@
 import React, { useLayoutEffect, useRef } from 'react';
-import sedanUnifiedSvgRaw from '@/assets/sedan-unified.svg?raw';
+import sedanUnifiedSvgRaw from '@/assets/sedan-unified-with-wheels.svg?raw';
 import { CAR_PARTS, partNameMatches, type Damage } from '@/lib/assistedInspectionModel';
 import {
   DAMAGE_HIGHLIGHT_FILL,
@@ -74,7 +74,8 @@ function firstPartNameInListOrder(partNames: string[]): string {
 /**
  * Single inline SVG from Figma: sets `fill` on panel groups/paths per `CAR_PARTS` when damage matches.
  * Parts that share the same base `id` are grouped so later passes do not clear the highlight.
- * Tire tread paths and tire-wall circles use different ids (`*-tire-tread` vs `*-tire-wall`).
+ * Tire tread paths, tire-wall circles, and wheel-rim circles use distinct ids (`*-tire-tread`,
+ * `*-tire-wall`, `*-wheel-rim`).
  */
 export function SedanUnifiedDiagram({
   damages,

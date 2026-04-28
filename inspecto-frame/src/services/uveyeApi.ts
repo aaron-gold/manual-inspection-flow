@@ -795,13 +795,38 @@ const ARTEMIS_CORNER_LABEL: Record<string, string> = {
   rightRear: 'Right Rear Tire',
 };
 
-/** Sidewall / rim / cosmetic — distinct from tread in the vehicle diagram. */
+/** Sidewall / bulge / cut — outer tire-wall hit target (`*-tire-wall`), distinct from tread and rim. */
 const ARTEMIS_CORNER_TIRE_WALL_LABEL: Record<string, string> = {
   leftFront: 'Left Front Tire Wall',
   rightFront: 'Right Front Tire Wall',
   leftRear: 'Left Rear Tire Wall',
   rightRear: 'Right Rear Tire Wall',
 };
+
+/** Rim / lug detections — inner circle only (`*-wheel-rim`). */
+const ARTEMIS_CORNER_WHEEL_RIM_LABEL: Record<string, string> = {
+  leftFront: 'Left Front Wheel Rim',
+  rightFront: 'Right Front Wheel Rim',
+  leftRear: 'Left Rear Wheel Rim',
+  rightRear: 'Right Rear Wheel Rim',
+};
+
+/**
+ * Single wall-image detection → either tire-wall or wheel-rim panel so the diagram highlights one ring.
+ * Uses UVeye `type` + display fields (e.g. TireRimDamage, lug nuts → rim; bulge/cut → wall).
+ */
+function artemisWallImagePartForDetection(corner: string, det: Record<string, unknown>): string {
+  const wall = ARTEMIS_CORNER_TIRE_WALL_LABEL[corner] ?? corner;
+  const rim = ARTEMIS_CORNER_WHEEL_RIM_LABEL[corner] ?? wall;
+  const raw = String(det.type ?? '');
+  const title = pickDetectionDisplayName(det);
+  const combined = `${raw} ${title}`.toLowerCase();
+  if (/\brim\b/.test(combined)) return rim;
+  if (combined.includes('rimdamage') || combined.includes('cosmeticrim') || combined.includes('hazardrim'))
+    return rim;
+  if (combined.includes('lug')) return rim;
+  return wall;
+}
 
 const ARTEMIS_CORNER_ORDER = ['leftFront', 'rightFront', 'leftRear', 'rightRear'] as const;
 
@@ -850,7 +875,6 @@ function artemisTireAlerts(response: UveyeInspectionResponse): UveyeAlert[] {
     if (!wheel) continue;
     const w = wheel;
     const partWheel = ARTEMIS_CORNER_LABEL[corner] ?? corner;
-    const partWall = ARTEMIS_CORNER_TIRE_WALL_LABEL[corner] ?? corner;
     const wallBase =
       typeof w.wallImage === 'string' ? w.wallImage.trim() : '';
     const treadBase =
@@ -881,8 +905,7 @@ function artemisTireAlerts(response: UveyeInspectionResponse): UveyeAlert[] {
         const { x, y } = rectangleToPinPercent(o.rectangle);
         const high = o.isHighSeverity === true;
         const med = o.isMediumSeverity === true;
-        /** `wallDetections` → tire wall part only (rim, bulge, cut, cosmetic rim, etc.). */
-        const part = partWall;
+        const part = artemisWallImagePartForDetection(corner, o);
         const humanType = humanizeDetectionType(String(o.type ?? 'Tire damage'));
         const rawTitle = pickDetectionDisplayName(o);
         const label = rawTitle || humanType;

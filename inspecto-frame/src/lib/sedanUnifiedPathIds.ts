@@ -1,5 +1,5 @@
 /**
- * Maps each `CAR_PARTS` name to element `id`(s) in `sedan-unified.svg`.
+ * Maps each `CAR_PARTS` name to element `id`(s) in `sedan-unified-with-wheels.svg`.
  * Ids are lowercase, hyphenated (Figma export). Use `defaultSvgPathIdFromPartName` only
  * for parts not listed here.
  */
@@ -43,8 +43,8 @@ const EXPLICIT_SVG_IDS: Partial<Record<string, string | string[]>> = {
   'Rear Window': 'rear-glass',
   /**
    * Tread anomalies (depth, FOD, tread wear, groove synthetics) → path `*-tire-tread`.
-   * Rim / sidewall / bulges / cuts → `<circle id="*-tire-wall">`. Artemis maps `wallDetections` → `… Tire Wall`,
-   * `treadDetections` + groove rows → `… Tire` (`uveyeApi` `artemisTireAlerts`).
+   * Sidewall / bulges / cuts (not rim-specific) → `<circle id="*-tire-wall">`.
+   * Rim / lug detections → `<circle id="*-wheel-rim">`. See `artemisWallImagePartForDetection` in `uveyeApi`.
    */
   'Left Front Tire': 'front-left-tire-tread',
   'Right Front Tire': 'front-right-tire-tread',
@@ -54,6 +54,10 @@ const EXPLICIT_SVG_IDS: Partial<Record<string, string | string[]>> = {
   'Right Front Tire Wall': 'front-right-tire-wall',
   'Left Rear Tire Wall': 'rear-left-tire-wall',
   'Right Rear Tire Wall': 'rear-right-tire-wall',
+  'Left Front Wheel Rim': 'front-left-wheel-rim',
+  'Right Front Wheel Rim': 'front-right-wheel-rim',
+  'Left Rear Wheel Rim': 'rear-left-wheel-rim',
+  'Right Rear Wheel Rim': 'rear-right-wheel-rim',
 };
 
 export function svgPathIdsForCarPart(partName: string): string[] {

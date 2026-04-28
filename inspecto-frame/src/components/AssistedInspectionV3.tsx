@@ -103,12 +103,16 @@ const NO_DAMAGE_PLACEHOLDER_IMAGE =
 const PART_NAME_TO_ARTEMIS_CORNER: Partial<Record<string, string>> = {
   'Left Front Tire': 'leftFront',
   'Left Front Tire Wall': 'leftFront',
+  'Left Front Wheel Rim': 'leftFront',
   'Right Front Tire': 'rightFront',
   'Right Front Tire Wall': 'rightFront',
+  'Right Front Wheel Rim': 'rightFront',
   'Left Rear Tire': 'leftRear',
   'Left Rear Tire Wall': 'leftRear',
+  'Left Rear Wheel Rim': 'leftRear',
   'Right Rear Tire': 'rightRear',
   'Right Rear Tire Wall': 'rightRear',
+  'Right Rear Wheel Rim': 'rightRear',
 };
 
 function artemisCornerForPartName(partName: string): string | undefined {
@@ -2415,7 +2419,7 @@ export default function AssistedInspectionV3({
    Mini Car Diagram — click a panel to jump to that part’s damages (same as parts list)
    ────────────────────────────────────────────── */
 
-/** Same pixel space as `sedan-unified.svg` / `SEDAN_LAYOUT_BASE_PX`. */
+/** Same pixel space as `sedan-unified-with-wheels.svg` / `SEDAN_LAYOUT_BASE_PX`. */
 const SEDAN_LAYOUT_VIEWBOX = { w: SEDAN_LAYOUT_BASE_PX.w, h: SEDAN_LAYOUT_BASE_PX.h } as const;
 
 /** Match `interior-damages-sketch.svg` / `undercarriage-sketch.svg` viewBoxes. */
@@ -2444,7 +2448,7 @@ function MiniCarDiagram({
 
   const isSedanVehicle = String(vehicleType ?? '').toLowerCase() === 'sedan';
 
-  /** Interior / undercarriage sketches — sedan exterior uses `sedan-unified.svg` + path ids. */
+  /** Interior / undercarriage sketches — sedan exterior uses `sedan-unified-with-wheels.svg` + path ids. */
   const partProps = (partName: string) => {
     const isActive = activePart?.name === partName;
     let fill = 'transparent';
